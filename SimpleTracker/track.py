@@ -175,7 +175,7 @@ if __name__ == "__main__":
 
     T = 10
     dt = 0.1
-    M = 5  # Number of predicted trajectories
+    M = 10  # Number of predicted trajectories
     w = 1
 
     X = np.random.random((1,T,2))
