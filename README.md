@@ -2,6 +2,8 @@
 
 This is a simple receeding horizon controller for tracking a **non-evasive** target. We assume that when the evader in view we are recieving rollout trajectories from the PWM. 
 
+## psd
+
 ## Problem Formulation
 
 - We want to minimize the distance between the expected pursuer trajectory and pursuer trajectories over a look ahead horizon of ￼ time steps.
@@ -38,4 +40,26 @@ x_1 = x_{current}
 $$
 - Boundary constraints (linear) : $x_k$ has to stay within stay within zone and out of KOZ
 - Motion constraints (quadratic) : Distance covered in one time step is bounded by max velocity, i.e $||x_{k+1} - x_k||^2 \le (v_{max}\Delta t)^2$ for $k = 1 ,..., N-1$.
+
+
+Of course. Here is a file structure for your project, formatted as a Markdown code block. You can copy and paste this directly into your `README.md` file.
+
+This structure includes brief descriptions of each file's role based on the code you've provided.
+
+
+## File Structure
+
+
+```
+SimpleTracker/
+│
+├── README.md        Project explanation, setup, and usage instructions
+│
+├── simulate.py    # Main script to run the pursuit-evasion simulation and save the results
+├── animator.py    # Creates a GIF animation from the simulation history data
+│
+├── track.py     # Trajectory optimization solver using SLSQP from SciPy
+│
+├── dummy_pwm.py    # Contains PWM code: Evader kinematic model and functions to generate predicted trajectories
+```
 
