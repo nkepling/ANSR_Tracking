@@ -19,13 +19,13 @@ def run_simulation():
     # --- 1. Simulation Setup ---
     T = 10    # Planning horizon (can be longer with a fast solver)
     dt = 0.1    # Time step duration
-    M = 10      # Number of evader trajectories to predict
-    sim_steps = 200 # Total number of steps in the simulation
+    M = 5      # Number of evader trajectories to predict
+    sim_steps = 30 # Total number of steps in the simulation
 
     # Agent parameters
-    pursuer_max_velo = 2.0
-    evader_velo = 2.0
-    min_separation_dist = 2.0
+    pursuer_max_velo = 12.0
+    evader_velo = 12.0
+    min_separation_dist = 1.0
 
     # Evader turning maneuver parameters
     TURN_INTERVAL = 20 #
@@ -78,10 +78,12 @@ def run_simulation():
             "max_velo": pursuer_max_velo,
             "start_pos": pursuer_current_pos,
             "evader_trajectories": predicted_evader_trajectories,
+            "evader_penalty_weight": 100.0,
             "min_evader_dist": min_separation_dist,
             "keep_out_zones": [koz1,koz2]
         }
-
+    
+  
         # 2. Define the bounds for the solver at this time step
         n_vars = 2 * T
         lb = -np.inf * np.ones(n_vars)
@@ -96,14 +98,12 @@ def run_simulation():
         cl = np.concatenate([
             np.zeros(2),             # Start pos constraint == 0
             -np.inf * np.ones(T - 1),# Motion constraint <= 0
-            np.zeros(T),
-            np.zeros(n_koz_cons)                # Avoidance constraint >= 0
+            np.zeros(n_koz_cons)
         ])
         cu = np.concatenate([
             np.zeros(2),             # Start pos constraint == 0
             np.zeros(T - 1),         # Motion constraint <= 0
-            np.inf * np.ones(T),
-            np.inf * np.ones(n_koz_cons)      # Avoidance constraint >= 0
+            np.inf * np.ones(n_koz_cons)
         ])
 
         
@@ -173,4 +173,4 @@ if __name__ == "__main__":
 
     # Pass the data to the animator and save to a new file
     # --- MODIFICATION: Changed output filename ---
-    animator.create_animation(simulation_data, "pursuit_with_koz_and_comutebudget.gif") #
+    animator.create_animation(simulation_data, "fast_pursuit.gif") #

@@ -1,0 +1,6 @@
+# requirements.txt
+numpy
+cyipopt
+jax
+jaxlib
+matplotlib
