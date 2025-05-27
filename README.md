@@ -56,6 +56,7 @@ For each timestep $k \in [1,T]$ we impose the following constaints on the pursue
 ### Fixed starting location (linear)
 
 $x_1$ is the current pursuer location
+
 $$
 x_1 = x_{current}
 $$
@@ -63,10 +64,13 @@ $$
 ### Boundary constraints (linear) : $x_k$ has to stay within stay within zone and out of KOZ
 
 The pursuer is forbidden from entering specified convex polygonal regions (Keep-Out Zones). A convex polygon can be represented by a set of linear inequalities, known as half-planes. For a point $\mathbf{z}$ to be inside the polygon, it must satisfy all half-plane inequalities simultaneously:
+
 $$ A\mathbf{z} \le \mathbf{b} $$
+
 This is equivalent to satisfying $a_i^T \mathbf{z} - b_i \le 0$ for all faces $i$ of the polygon, where $a_i^T$ is the $i$-th row of matrix $A$.
 
 To remain outside the polygon, a point $\mathbf{x}_k$ in the pursuer's trajectory must violate at least one of these conditions. This can be expressed with the `max` function:
+
 $$ \max_{i} (a_i^T \mathbf{x}_k - b_i) \ge 0 $$
 
 Because the `max` function is not smoothly differentiable, which is required by gradient-based optimizers like IPOPT, we use the `LogSumExp` function as a smooth approximation. This yields a single, non-linear inequality constraint for each point $\mathbf{x}_k$ in the trajectory and for each KOZ. The constraint is formulated as:
@@ -79,9 +83,11 @@ $$
 ### Motion constraints (quadratic) 
 
 Distance covered in one time step is bounded by max velocity, i.e 
+
 $$||x_{k+1} - x_k||^2 \le (v_{max}\Delta t)^2$$ 
 
 for 
+
 $$k = 1 ,..., N-1$$
 
 
