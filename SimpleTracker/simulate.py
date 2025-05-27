@@ -2,6 +2,7 @@ import numpy as np
 import track  # Contains the SLSQP solver logic
 import vis # Contains the visualization functions
 from dummy_pwm import Evader, forward, get_straight_away_trajectories
+import track_ipotp
 import animator
 
 def run_simulation():
@@ -49,6 +50,14 @@ def run_simulation():
         # Solve for the optimal pursuer plan starting from its CURRENT position
         # A large box is used as the "Safe Walk Zone" for this example
         swx_verts = np.array([[-30, -30], [30, -30], [30, 30], [-30, 30], [-30, -30]])
+        # pursuer_plan = track_ipotp.solve_ipopt(
+        #     evader_trajectories=predicted_evader_trajectories,
+        #     T=T,
+        #     dt=dt,
+        #     start_pos=pursuer_current_pos,
+        #     max_velo=1.0
+        # )
+
         pursuer_plan = track.solve(
             evader_trajectories=predicted_evader_trajectories,
             T=T,
@@ -101,7 +110,8 @@ def run_simulation():
         "pursuer_history": np.array(pursuer_history),
         "evader_history": np.array(evader_history),
         "pursuer_plans": pursuer_plans_history,
-        "evader_predictions": evader_predictions_history
+        "evader_predictions": evader_predictions_history,
+        "keep_out_zones": keep_out_zones
     }
 
     

@@ -37,12 +37,14 @@ $$
 x_1 = x_{current}
 $$
 - Boundary constraints (linear) : $x_k$ has to stay within stay within zone and out of KOZ
+
+Given a set of keep out zone vertivies we constuct a half plane for each segment of the keep out zone polygon. 
+
+A "half-plane" is defined as **a**
 - Motion constraints (quadratic) : Distance covered in one time step is bounded by max velocity, i.e $||x_{k+1} - x_k||^2 \le (v_{max}\Delta t)^2$ for $k = 1 ,..., N-1$.
 
 
-
 ## File Structure
-
 
 ```
 SimpleTracker/
@@ -54,6 +56,8 @@ SimpleTracker/
 │
 ├── track.py     # Trajectory optimization solver using SLSQP from SciPy
 │
-├── dummy_pwm.py    # Contains PWM code: Evader kinematic model and functions to generate predicted trajectories
+├─- dummy_pwm.py    # Contains PWM code: Evader kinematic model and functions to generate predicted trajectories
+|-- ipopt_sim.py # Simulation script for ipopt solver
+|-- track_ipopt.py # Trajectory optimizatio sovler using IPOPT solver. 
 ```
 
