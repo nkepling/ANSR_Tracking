@@ -33,3 +33,8 @@ def visualize_plan(pursuer_plan,evader_ground_truth: np.ndarray, predicted_traje
     ax.legend()
     ax.grid(True)
     plt.show()
+
+
+
+if __name__ == "__main__":
+    pass

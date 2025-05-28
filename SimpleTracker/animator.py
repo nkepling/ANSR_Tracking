@@ -28,8 +28,8 @@ def create_animation(data,filename=None):
     
     # Determine axis limits dynamically to fit all data
     all_points = np.vstack([pursuer_history, evader_history])
-    ax.set_xlim(all_points[:, 0].min() - 5, all_points[:, 0].max() + 5)
-    ax.set_ylim(all_points[:, 1].min() - 5, all_points[:, 1].max() + 5)
+    ax.set_xlim(-20, 20)
+    ax.set_ylim(-20, 20)
     ax.grid(True)
     ax.set_title("Pursuit-Evasion Simulation")
 
@@ -53,11 +53,11 @@ def create_animation(data,filename=None):
     evader_head, = ax.plot([], [], 'go', markersize=10)
     
     # Pursuer's current plan
-    pursuer_plan_line, = ax.plot([], [], 'b--', lw=1, alpha=0.7, label='Pursuer Plan')
+    pursuer_plan_line, = ax.plot([], [], 'b--', lw=2, alpha=0.7, label='Pursuer Plan')
     
     # Evader's predicted trajectories
     num_predictions = evader_predictions[0].shape[0]
-    evader_pred_lines = [ax.plot([], [], 'r--', lw=1, alpha=0.2)[0] for _ in range(num_predictions)]
+    evader_pred_lines = [ax.plot([], [], 'k--', lw=2, alpha=0.2)[0] for _ in range(num_predictions)]
     
     # Time step text
     time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes)
@@ -100,7 +100,7 @@ def create_animation(data,filename=None):
     try:
         filename_to_save = filename if filename is not None else 'pursuit_animation.gif'
         print(f"Saving animation to {filename_to_save}... (This may take a moment)")
-        anim.save(filename_to_save, writer='pillow', fps=20)
+        anim.save(filename_to_save, writer='pillow', fps=10)
         print("Animation saved successfully.")
     except Exception as e:
         print(f"Error saving animation: {e}")
