@@ -84,8 +84,10 @@ class PursuitProblem:
             if self.kozs:
                 for k in range(self.T):
                     for koz in self.kozs:
-                        z = (koz['A'] @ pursuer_path[k] - koz['b']) / self.alpha
-                        logsumexp = self.alpha * jnp.log(jnp.sum(jnp.exp(z)))
+                        z_terms = (koz['A'] @ pursuer_path[k] - koz['b']) / self.alpha
+                        z_max = jnp.max(z_terms)
+                        # Subtract z_max before exp to prevent overflow, add it back (scaled by alpha) after log
+                        logsumexp = self.alpha * (z_max + jnp.log(jnp.sum(jnp.exp(z_terms - z_max)) + 1e-10)) # Add small epsilon for log(0)
                         koz_violations.append(logsumexp)
             
             return jnp.concatenate([start_pos_violation, motion_violation, jnp.array(koz_violations)])
@@ -133,9 +135,9 @@ def solve(x0, problem_data, lb, ub, cl, cu):
         lb=lb, ub=ub, cl=cl, cu=cu
     )
     # --- MODIFICATION: Corrected IPOPT option name ---
-    time_budget_seconds = 0.45
-    nlp.add_option('max_wall_time', time_budget_seconds)
-    nlp.add_option('print_level', 0)
+    # time_budget_seconds = 0.45
+    # nlp.add_option('max_wall_time', time_budget_seconds)
+    nlp.add_option('print_level', 5)
 
     print("--- Starting IPOPT with JAX backend (Hybrid Constraints) ---")
     x, info = nlp.solve(x0)

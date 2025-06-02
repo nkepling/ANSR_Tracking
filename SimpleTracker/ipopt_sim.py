@@ -21,12 +21,12 @@ def run_simulation():
     M = 5       # Number of evader trajectories to predict (e.g., 1 straight, 2 up, 2 down)
     sim_steps = 50
 
-    target_goals =[(6,30),(6,-30)]
+    target_goals =[(6,-11),(6,11)]
 
     # Agent parameters
     pursuer_max_velo = 8.0
     evader_velo = 8.0       # Matched speed
-    min_separation_dist = 3.0
+    min_separation_dist = 1.0
 
     # Evader ground truth turning maneuver parameters
     EVADER_TURN_X_THRESHOLD = 6 # When the actual evader makes a turn decision
@@ -35,6 +35,8 @@ def run_simulation():
     # --- 2. Initialize Agent States ---
     pursuer_current_pos = np.array([-18.0, 0.0]) 
     evader_current_state = Evader(x=-15.0, y=0.0, theta=np.deg2rad(0), v=evader_velo) 
+
+    prev_pursuer_plan = None
 
     # --- 3. Log History for Final Visualization ---
     pursuer_history = [pursuer_current_pos] 
@@ -50,8 +52,9 @@ def run_simulation():
     koz3 = np.array([(5,-2.5),(-15,-2.5),(-15,-1.5),(5,-1.5)])
     koz4 = np.array([(4,-2.5),(4,-10),(5,-10),(5,-2.5)])
     koz5 = np.array([(8,10),(8,-10),(9,-10),(9,10)])
+    koz6 = np.array([(5,0.25),(5,-0.25),(5.25,-0.25),(5.25,0.25)])
     # koz2 = np.array([(5,)])
-    koz_list = [koz1,koz2,koz3,koz4,koz5]
+    koz_list = [koz1,koz2,koz3,koz4,koz5,koz6]
 
 
     print("Starting simulation with JAX + Class-based IPOPT solver...")
@@ -85,7 +88,7 @@ def run_simulation():
             "T": T, "dt": dt, "max_velo": pursuer_max_velo,
             "start_pos": pursuer_current_pos,
             "evader_trajectories": predicted_evader_trajectories,
-            "evader_penalty_weight": 200.0, # Make sure this matches what track_ipotp.py expects
+            "evader_penalty_weight": 00.0, # Make sure this matches what track_ipotp.py expects
             "min_evader_dist": min_separation_dist,
             "keep_out_zones": koz_list 
             # If track_ipotp.py expects koz_penalty_weight, add it here.
@@ -112,8 +115,12 @@ def run_simulation():
             np.inf * np.ones(n_koz_cons)
         ])
         
-        avg_end_pos = np.mean(predicted_evader_trajectories[:, -1, :], axis=0)
-        x0 = np.linspace(pursuer_current_pos, avg_end_pos, T).flatten()
+
+        if prev_pursuer_plan is None:
+            avg_end_pos = np.mean(predicted_evader_trajectories[:, -1, :], axis=0)
+            x0 = np.linspace(pursuer_current_pos, avg_end_pos, T,dtype=np.float64).flatten()
+        else:
+            x0 = prev_pursuer_plan
 
         start_time = time.perf_counter()
         pursuer_plan, info = tracker.solve(x0, problem_data, lb, ub, cl, cu)
@@ -127,6 +134,7 @@ def run_simulation():
             break 
 
         pursuer_plans_history.append(pursuer_plan) 
+        prev_pursuer_plan = pursuer_plan.flatten()
 
         # --- c. EVADER MANEUVER (Ground Truth Evader) ---
         if not evader_has_made_ground_truth_turn and evader_current_state.x >= EVADER_TURN_X_THRESHOLD: 

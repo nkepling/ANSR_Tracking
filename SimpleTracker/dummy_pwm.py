@@ -157,101 +157,120 @@ def generate_goal_directed_trajectories(
     # This list will store the final time-discretized trajectories
     time_discretized_plans = [] 
 
-    for g in target_goals:
-        target_goal_np = np.array(g)
-        for i in range(num_samples_per_goal):
-            # Perturb speed for this specific sample trajectory
-            # Ensure speed is positive and non-zero for path traversal calculation
-            perturbed_speed = max(0.1, initial_evader_state.v + np.random.normal(0, speed_variation_std))
-            
-            rrt = RRT(
-                start=[initial_evader_state.x, initial_evader_state.y],
-                goal=[target_goal_np[0], target_goal_np[1]],
-                rand_area=rand_area,
-                obstacle_list=koz_list if koz_list is not None else [], # Pass KOZs to RRT
-                expand_dis=rrt_expand_dis,
-                path_resolution=rrt_path_resolution,
-                max_iter=rrt_max_iter,
-                robot_radius=rrt_robot_radius,
-                goal_sample_rate=rrt_goal_sample_rate
-            )
+    # distance based trajctory optim
 
-            # rrt_path is a list of [x,y] waypoints from RRT, e.g., [[x_start,y_start], ..., [x_goal,y_goal]]
-            rrt_path_waypoints = rrt.planning(animation=False) 
-            
-            current_time_discretized_trajectory = np.zeros((num_time_steps, 2))
+    distances_to_goals = [np.linalg.norm(np.array(g) - initial_evader_state.pos) for g in target_goals]
+    epsilon = 1e-3 
+    attractiveness_scores = [1.0 / (d + epsilon) for d in distances_to_goals]
+    sum_scores = sum(attractiveness_scores)
+    goal_selection_probabilities = []
+    if sum_scores < 1e-6: # Avoid division by zero if all goals are extremely far or scores are zero
+        # Fallback to uniform probability
+        if target_goals:
+             goal_selection_probabilities = [1.0 / len(target_goals)] * len(target_goals)
+    else:
+        goal_selection_probabilities = [score / sum_scores for score in attractiveness_scores]
 
-            if rrt_path_waypoints is None or len(rrt_path_waypoints) < 2:
-                # Fallback: RRT failed or path is too short (e.g. start is goal).
-                # Generate a simple straight path towards the goal using evader's kinematics.
-                # print(f"RRT failed or path too short for goal {g}, sample {i}. Using kinematic fallback.")
-                temp_state = Evader(x=initial_evader_state.x, y=initial_evader_state.y, 
-                                    theta=initial_evader_state.theta, v=perturbed_speed)
-                for k_ts in range(num_time_steps):
-                    current_time_discretized_trajectory[k_ts, :] = temp_state.pos
-                    dir_vec_to_goal = target_goal_np - temp_state.pos
-                    if np.linalg.norm(dir_vec_to_goal) > 0.1: # Only update theta if not at goal
-                         temp_state = Evader(x=temp_state.x, y=temp_state.y, 
-                                             theta=np.arctan2(dir_vec_to_goal[1], dir_vec_to_goal[0]), 
-                                             v=temp_state.v)
-                    temp_state = forward(temp_state, delta_t)
+    total_trajectories_to_generate = len(target_goals) * num_samples_per_goal
+
+    for _ in range(total_trajectories_to_generate):
+        # --- MODIFICATION: Select a target goal based on calculated probabilities ---
+        if not goal_selection_probabilities: # Should not happen if target_goals is not empty
+            selected_target_goal_np = np.array(target_goals[0]) # Fallback
+        else:
+            chosen_goal_index = np.random.choice(len(target_goals), p=goal_selection_probabilities)
+            selected_target_goal_np = np.array(target_goals[chosen_goal_index])
+        # --- END MODIFICATION ---
+        perturbed_speed = max(0.1, initial_evader_state.v + np.random.normal(0, speed_variation_std))
+        
+        rrt = RRT(
+            start=[initial_evader_state.x, initial_evader_state.y],
+            goal=[selected_target_goal_np[0], selected_target_goal_np[1]],
+            rand_area=rand_area,
+            obstacle_list=koz_list if koz_list is not None else [], # Pass KOZs to RRT
+            expand_dis=rrt_expand_dis,
+            path_resolution=rrt_path_resolution,
+            max_iter=rrt_max_iter,
+            robot_radius=rrt_robot_radius,
+            goal_sample_rate=rrt_goal_sample_rate
+        )
+
+        # rrt_path is a list of [x,y] waypoints from RRT, e.g., [[x_start,y_start], ..., [x_goal,y_goal]]
+        rrt_path_waypoints = rrt.planning(animation=False) 
+        
+        current_time_discretized_trajectory = np.zeros((num_time_steps, 2))
+
+        if rrt_path_waypoints is None or len(rrt_path_waypoints) < 2:
+            # Fallback: RRT failed or path is too short (e.g. start is goal).
+            # Generate a simple straight path towards the goal using evader's kinematics.
+            # print(f"RRT failed or path too short for goal {g}, sample {i}. Using kinematic fallback.")
+            temp_state = Evader(x=initial_evader_state.x, y=initial_evader_state.y, 
+                                theta=initial_evader_state.theta, v=perturbed_speed)
+            for k_ts in range(num_time_steps):
+                current_time_discretized_trajectory[k_ts, :] = temp_state.pos
+                dir_vec_to_goal = selected_target_goal_np - temp_state.pos
+                if np.linalg.norm(dir_vec_to_goal) > 0.1: # Only update theta if not at goal
+                        temp_state = Evader(x=temp_state.x, y=temp_state.y, 
+                                            theta=np.arctan2(dir_vec_to_goal[1], dir_vec_to_goal[0]), 
+                                            v=temp_state.v)
+                temp_state = forward(temp_state, delta_t)
+        else:
+            # Valid RRT path found, now resample it based on time and velocity
+            rrt_nodes_np = np.array(rrt_path_waypoints) # Shape (N_rrt_nodes, 2)
+
+            # Calculate cumulative distances along the RRT path segments
+            segment_vectors = np.diff(rrt_nodes_np, axis=0)
+            segment_lengths = np.linalg.norm(segment_vectors, axis=1)
+            
+            if len(segment_lengths) == 0: # Path is a single point (start might be very close/at goal)
+                cumulative_rrt_path_lengths = np.array([0.0])
             else:
-                # Valid RRT path found, now resample it based on time and velocity
-                rrt_nodes_np = np.array(rrt_path_waypoints) # Shape (N_rrt_nodes, 2)
-
-                # Calculate cumulative distances along the RRT path segments
-                segment_vectors = np.diff(rrt_nodes_np, axis=0)
-                segment_lengths = np.linalg.norm(segment_vectors, axis=1)
-                
-                if len(segment_lengths) == 0: # Path is a single point (start might be very close/at goal)
-                    cumulative_rrt_path_lengths = np.array([0.0])
-                else:
-                    cumulative_rrt_path_lengths = np.concatenate(([0.0], np.cumsum(segment_lengths)))
-                
-                total_rrt_path_length = cumulative_rrt_path_lengths[-1]
-
-                for k_time_step in range(num_time_steps):
-                    # Distance evader should have traveled along the path by this time step
-                    dist_evader_should_travel = perturbed_speed * (k_time_step * delta_t)
-
-                    if dist_evader_should_travel >= total_rrt_path_length and total_rrt_path_length > 1e-6 :
-                        # Evader has reached or passed the end of the RRT path, stays at RRT goal
-                        current_time_discretized_trajectory[k_time_step, :] = rrt_nodes_np[-1, :]
-                    elif total_rrt_path_length <= 1e-6: # RRT path is effectively a single point
-                        current_time_discretized_trajectory[k_time_step, :] = rrt_nodes_np[0, :]
-                    else:
-                        # Find which RRT path segment the evader is on at this distance
-                        # 'right' means if dist is equal to a cum_length, it picks the segment *after*
-                        segment_idx = np.searchsorted(cumulative_rrt_path_lengths, 
-                                                      dist_evader_should_travel, side='right') - 1
-                        segment_idx = max(0, segment_idx) 
-                        # Ensure segment_idx is valid for segment_lengths and rrt_nodes_np
-                        # It should not exceed len(segment_lengths) - 1
-                        segment_idx = min(segment_idx, len(segment_lengths) - 1 if len(segment_lengths) > 0 else 0)
-
-
-                        p1 = rrt_nodes_np[segment_idx]
-                        # Guard against segment_idx+1 being out of bounds if path was very short
-                        p2_idx = min(segment_idx + 1, len(rrt_nodes_np) - 1)
-                        p2 = rrt_nodes_np[p2_idx]
-                        
-                        dist_covered_at_segment_start = cumulative_rrt_path_lengths[segment_idx]
-                        dist_into_current_segment = dist_evader_should_travel - dist_covered_at_segment_start
-                        
-                        current_segment_actual_length = segment_lengths[segment_idx] if segment_idx < len(segment_lengths) else 0
-
-
-                        if current_segment_actual_length < 1e-6: # Segment is essentially a point, or past end
-                            fraction_along_segment = 0.0 if dist_into_current_segment <=0 else 1.0
-                        else:
-                            fraction_along_segment = dist_into_current_segment / current_segment_actual_length
-                        
-                        fraction_along_segment = np.clip(fraction_along_segment, 0.0, 1.0)
-
-                        interpolated_point = p1 + fraction_along_segment * (p2 - p1)
-                        current_time_discretized_trajectory[k_time_step, :] = interpolated_point
+                cumulative_rrt_path_lengths = np.concatenate(([0.0], np.cumsum(segment_lengths)))
             
-            time_discretized_plans.append(current_time_discretized_trajectory)
+            total_rrt_path_length = cumulative_rrt_path_lengths[-1]
+
+            for k_time_step in range(num_time_steps):
+                # Distance evader should have traveled along the path by this time step
+                dist_evader_should_travel = perturbed_speed * (k_time_step * delta_t)
+
+                if dist_evader_should_travel >= total_rrt_path_length and total_rrt_path_length > 1e-6 :
+                    # Evader has reached or passed the end of the RRT path, stays at RRT goal
+                    current_time_discretized_trajectory[k_time_step, :] = rrt_nodes_np[-1, :]
+                elif total_rrt_path_length <= 1e-6: # RRT path is effectively a single point
+                    current_time_discretized_trajectory[k_time_step, :] = rrt_nodes_np[0, :]
+                else:
+                    # Find which RRT path segment the evader is on at this distance
+                    # 'right' means if dist is equal to a cum_length, it picks the segment *after*
+                    segment_idx = np.searchsorted(cumulative_rrt_path_lengths, 
+                                                    dist_evader_should_travel, side='right') - 1
+                    segment_idx = max(0, segment_idx) 
+                    # Ensure segment_idx is valid for segment_lengths and rrt_nodes_np
+                    # It should not exceed len(segment_lengths) - 1
+                    segment_idx = min(segment_idx, len(segment_lengths) - 1 if len(segment_lengths) > 0 else 0)
+
+
+                    p1 = rrt_nodes_np[segment_idx]
+                    # Guard against segment_idx+1 being out of bounds if path was very short
+                    p2_idx = min(segment_idx + 1, len(rrt_nodes_np) - 1)
+                    p2 = rrt_nodes_np[p2_idx]
+                    
+                    dist_covered_at_segment_start = cumulative_rrt_path_lengths[segment_idx]
+                    dist_into_current_segment = dist_evader_should_travel - dist_covered_at_segment_start
+                    
+                    current_segment_actual_length = segment_lengths[segment_idx] if segment_idx < len(segment_lengths) else 0
+
+
+                    if current_segment_actual_length < 1e-6: # Segment is essentially a point, or past end
+                        fraction_along_segment = 0.0 if dist_into_current_segment <=0 else 1.0
+                    else:
+                        fraction_along_segment = dist_into_current_segment / current_segment_actual_length
+                    
+                    fraction_along_segment = np.clip(fraction_along_segment, 0.0, 1.0)
+
+                    interpolated_point = p1 + fraction_along_segment * (p2 - p1)
+                    current_time_discretized_trajectory[k_time_step, :] = interpolated_point
+        
+        time_discretized_plans.append(current_time_discretized_trajectory)
             
     if not time_discretized_plans:
         # Fallback if target_goals was empty or num_samples_per_goal was 0

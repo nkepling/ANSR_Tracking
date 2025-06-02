@@ -108,6 +108,10 @@ SimpleTracker/
 |-- track_ipopt.py # Trajectory optimizatio sovler using IPOPT solver. 
 ```
 
+## Demo
+
+![assets/fast_pursuit_corridor.gif](assets/fast_pursuit_corridor.gif)
+
 ## Demo 
 
 ![assets/pursuit_with_hybrid_constraints.gif](assets/pursuit_with_hybrid_constraints.gif)
