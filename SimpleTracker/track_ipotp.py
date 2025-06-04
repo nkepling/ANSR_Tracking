@@ -137,6 +137,7 @@ def solve(x0, problem_data, lb, ub, cl, cu):
     # --- MODIFICATION: Corrected IPOPT option name ---
     # time_budget_seconds = 0.45
     # nlp.add_option('max_wall_time', time_budget_seconds)
+    nlp.add_option('warm_start_init_point', 'yes')
     nlp.add_option('print_level', 5)
 
     print("--- Starting IPOPT with JAX backend (Hybrid Constraints) ---")
@@ -190,7 +191,7 @@ if __name__ == "__main__":
     avg_end_pos = np.mean(evader_trajectories[:, -1, :], axis=0)
     x0 = np.linspace(start_pos, avg_end_pos, T).flatten()
 
-    x_sol_flat, info = solve(x0, problem_data, lb, ub, cl, cu)
+    x_sol_flat, info = solve(x0, problem_data, lb, ub, cl, cu )
 
     print("\n--- Results ---")
     print(f"Status: {info['status_msg']}")

@@ -18,7 +18,7 @@ def run_simulation():
     # --- 1. Simulation Setup ---
     T = 10    # Planning horizon
     dt = 0.1    # Time step duration
-    M = 5       # Number of evader trajectories to predict (e.g., 1 straight, 2 up, 2 down)
+    M = 1       # Number of evader trajectories to predict (e.g., 1 straight, 2 up, 2 down)
     sim_steps = 50
 
     target_goals =[(6,-11),(6,11)]
@@ -52,9 +52,9 @@ def run_simulation():
     koz3 = np.array([(5,-2.5),(-15,-2.5),(-15,-1.5),(5,-1.5)])
     koz4 = np.array([(4,-2.5),(4,-10),(5,-10),(5,-2.5)])
     koz5 = np.array([(8,10),(8,-10),(9,-10),(9,10)])
-    koz6 = np.array([(5,0.25),(5,-0.25),(5.25,-0.25),(5.25,0.25)])
+    
     # koz2 = np.array([(5,)])
-    koz_list = [koz1,koz2,koz3,koz4,koz5,koz6]
+    koz_list = [koz1,koz2,koz3,koz4,koz5]
 
 
     print("Starting simulation with JAX + Class-based IPOPT solver...")
@@ -71,7 +71,7 @@ def run_simulation():
         predicted_evader_trajectories = generate_goal_directed_trajectories(
                 initial_evader_state = evader_current_state,
                 target_goals =  target_goals,  # List of [x, y] target coordinates
-                num_samples_per_goal = 5,
+                num_samples_per_goal = M,
                 num_time_steps = T,
                 delta_t = dt,
                 speed_variation_std = 0.1,
@@ -186,4 +186,4 @@ if __name__ == "__main__":
         print(f"Min solve time:     {np.min(solve_times_data):.4f} seconds")
         print(f"Standard deviation: {np.std(solve_times_data):.4f} seconds")
 
-    animator.create_animation(simulation_data, "fast_pursuit_corridor.gif")
+    animator.create_animation(simulation_data, "max_wall_time.gif")
