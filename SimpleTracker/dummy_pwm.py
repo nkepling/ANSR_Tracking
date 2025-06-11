@@ -5,10 +5,149 @@ from matplotlib.patches import Polygon
 import math
 import typing
 from rrt import RRT
+import copy
+import casadi as ca
+import time
+from scipy.interpolate import splprep, splev
 
-# --- Corrected Evader Class and Kinematic Functions ---
 
-### CORRECTED EVADER CLASS ###
+
+
+def interpolate_by_time(coarse_waypoints, dt, avg_velocity):
+    """
+    Generates a dense set of waypoints by placing points roughly dt seconds
+    apart, based on a given average velocity.
+
+    Args:
+        coarse_waypoints (np.ndarray): An array of shape (M, 2) defining the coarse path.
+        dt (float): The desired time step in seconds between fine waypoints.
+        avg_velocity (float): The assumed average velocity along the path.
+
+    Returns:
+        np.ndarray: A dense array of waypoints.
+    """
+    if dt <= 0 or avg_velocity <= 0:
+        raise ValueError("dt and avg_velocity must be positive.")
+
+    fine_waypoints = [coarse_waypoints[0]]
+
+    for i in range(len(coarse_waypoints) - 1):
+        start_point = coarse_waypoints[i]
+        end_point = coarse_waypoints[i+1]
+        
+        # Calculate the geometry of the segment
+        segment_vector = end_point - start_point
+        segment_length = np.linalg.norm(segment_vector)
+        
+        if segment_length < 1e-6:  # Skip zero-length segments
+            continue
+            
+        direction = segment_vector / segment_length
+        
+        # Calculate how many full steps of size dt fit in the segment
+        time_to_travel = segment_length / avg_velocity
+        num_intermediate_points = int(np.floor(time_to_travel / dt))
+
+        # Place the intermediate points
+        for j in range(1, num_intermediate_points + 1):
+            travel_dist = j * dt * avg_velocity
+            new_point = start_point + travel_dist * direction
+            fine_waypoints.append(new_point)
+        
+        # Always include the coarse waypoint to ensure path completion
+        fine_waypoints.append(end_point)
+
+    # Remove duplicate points that may arise from the logic
+    # by checking the distance between consecutive points.
+    unique_fine_waypoints = [fine_waypoints[0]]
+    for i in range(1, len(fine_waypoints)):
+        if np.linalg.norm(fine_waypoints[i] - unique_fine_waypoints[-1]) > 1e-6:
+            unique_fine_waypoints.append(fine_waypoints[i])
+            
+    return np.array(unique_fine_waypoints)
+
+
+def generate_bspline_trajectory(waypoints, num_points=200, spline_degree=3):
+    """
+    Generates a smooth trajectory using B-splines that passes through given waypoints.
+
+    Args:
+        waypoints (np.ndarray): A (num_waypoints, 2) array of [x, y] points.
+        num_points (int): The number of points to generate for the final trajectory.
+        spline_degree (int): The degree of the spline (cubic is a good default).
+
+    Returns:
+        A dictionary containing the state (x, y, theta) and control (v, omega)
+        trajectories.
+    """
+    # 1. --- Parameterize the Path ---
+    # We use cumulative distance along the path as the parameter 'u'.
+    # This helps create a more uniform interpolation.
+    distance = np.cumsum(np.sqrt(np.sum(np.diff(waypoints, axis=0)**2, axis=1)))
+    distance = np.insert(distance, 0, 0)
+    
+    # 2. --- Fit the B-spline ---
+    # splprep finds the knots and coefficients for a spline that approximates the path.
+    # 's' is a smoothing factor. s=0 means the spline must pass through all points.
+    tck, u = splprep([waypoints[:, 0], waypoints[:, 1]], u=distance, k=spline_degree, s=0)
+
+    # 3. --- Evaluate the Spline and its Derivatives ---
+    u_fine = np.linspace(0, distance[-1], num_points)
+    
+    # Evaluate spline for position (derivative=0)
+    x_fine, y_fine = splev(u_fine, tck, der=0)
+    
+    # Evaluate for velocity (derivative=1)
+    vx, vy = splev(u_fine, tck, der=1)
+    
+    # Evaluate for acceleration (derivative=2)
+    ax, ay = splev(u_fine, tck, der=2)
+
+    # 4. --- Calculate Kinematic States ---
+    theta = np.arctan2(vy, vx)
+    
+    # Linear velocity (speed). Note this is NOT constant.
+    # The speed is determined by the spline parameterization.
+    v = np.sqrt(vx**2 + vy**2)
+    
+    # Angular velocity (omega)
+    # The formula is: omega = (vx*ay - vy*ax) / (vx^2 + vy^2)
+    # Add a small epsilon to avoid division by zero if the robot stops.
+    omega = (vx * ay - vy * ax) / (vx**2 + vy**2 + 1e-6)
+    
+    return {
+        "x": x_fine, "y": y_fine, "theta": theta,
+        "v": v, "omega": omega,
+        "waypoints": waypoints
+    }
+
+
+def plot_bspline_results(results):
+    """Helper function to visualize the B-spline results."""
+    waypoints = results["waypoints"]
+    x, y, theta = results["x"], results["y"], results["theta"]
+    
+    plt.figure(figsize=(10, 8))
+    plt.plot(waypoints[:, 0], waypoints[:, 1], 'ro', markersize=10, label='Waypoints')
+    plt.plot(x, y, 'b-', linewidth=2, label='B-Spline Trajectory')
+
+    # Add arrows to show heading
+    for i in range(0, len(x), 20):
+        plt.arrow(x[i], y[i],
+                  0.5 * np.cos(theta[i]), 0.5 * np.sin(theta[i]),
+                  head_width=0.15, fc='b', ec='b')
+
+    plt.title("B-Spline Trajectory Generation")
+    plt.xlabel("X Position (m)")
+    plt.ylabel("Y Position (m)")
+    plt.legend()
+    plt.grid(True)
+    plt.axis('equal')
+    plt.show()
+
+
+
+
 
 class Evader:
     """
@@ -151,9 +290,6 @@ class Evader:
 
         return preds
         
-
-
-
 def forward(current_state: Evader, delta_t: float) -> Evader:
     """
     FIXED: Move evader forward with correct simple Euler integration.
@@ -208,52 +344,6 @@ def get_straight_away_trajectories(initial_evader_state: Evader,
     return np.array(all_trajectories_list)
 
 
-# def generate_goal_directed_trajectories(
-#     initial_evader_state: Evader,
-#     target_goals: list,  # List of [x, y] target coordinates
-#     num_samples_per_goal: int,
-#     num_time_steps: int,
-#     delta_t: float,
-#     speed_variation_std: float = 0.1,
-#     heading_noise_std: float = np.deg2rad(15.0),
-#     momentum_factor: float = 0.2,
-#     koz_list: list = None, # List of KOZ vertex arrays
-#     koz_avoidance_radius: float = 3.0, # How close to a KOZ center to trigger avoidance
-#     koz_steer_strength: float = 0.5    # How strongly to steer away from KOZs (0-1)
-# ) -> np.ndarray:
-     
-#     rand_area = [-20, 20, -12, 12] 
-
-    
-#     plans  = [ ]
-#     for g in target_goals:
-#         for i in range(num_samples_per_goal):
-#             rrt = RRT(
-#                 start=[initial_evader_state.x, initial_evader_state.y], # Start position from your simulate_with_jax.py
-#                 goal=[g[0], g[1]],  # Goal (e.g., end of the corridor before koz3)
-#                 rand_area=rand_area,
-#                 obstacle_list=koz_list,
-#                 expand_dis=2.0,       # Reduced expand distance for tighter spaces
-#                 path_resolution=0.2,  # Finer path resolution
-#                 max_iter=2000,        # Increased iterations for complex environments
-#                 robot_radius=0.5      # Example robot radius
-#             )
-
-#             path = rrt.planning(animation=False)
-#             plans.append(path)
-
-#     truncated_plans = []
-#     for p in plans:
-#         if len(p) < num_time_steps:
-#             diff = num_time_steps - len(p)
-#             goal = p[-1]
-#             buff = [goal for x in range(diff)]
-#             truncated_plans.append(p + buff)
-#         else:
-#             truncated_plans.append(p[:num_time_steps])
-        
-
-#     return np.array(truncated_plans)
 
 
 def generate_goal_directed_trajectories(
@@ -411,6 +501,40 @@ def generate_goal_directed_trajectories(
 
 # --- Visualization and Demonstration (using the function from your previous code) ---
 
+
+
+def plot_results(results):
+    """Helper function to visualize the optimization results."""
+    state = results["state"]
+    waypoints = results["waypoints"]
+    ref_path = results["reference_path"]
+    
+    plt.figure(figsize=(10, 8))
+    
+    # Plot original sparse waypoints
+    plt.plot(waypoints[:, 0], waypoints[:, 1], 'ro', markersize=10, label='Waypoints')
+    
+    # Plot the dense reference trajectory
+    plt.plot(ref_path[0, :], ref_path[1, :], 'g--', label='Reference Path')
+
+    # Plot the final optimized trajectory
+    plt.plot(state[0, :], state[1, :], 'b-', linewidth=2, label='Optimized Trajectory')
+
+    # Add arrows to show heading
+    for i in range(0, state.shape[1], 10):
+        plt.arrow(state[0, i], state[1, i],
+                  0.5 * np.cos(state[2, i]), 0.5 * np.sin(state[2, i]),
+                  head_width=0.15, fc='b', ec='b')
+
+    plt.title("Unicycle Trajectory Optimization")
+    plt.xlabel("X Position (m)")
+    plt.ylabel("Y Position (m)")
+    plt.legend()
+    plt.grid(True)
+    plt.axis('equal')
+    plt.show()
+
+
 def visualize(ground_truth: np.ndarray, predicted_trajectories: np.ndarray,koz_list:typing.Union[list,None]=None):
     """Simple visualization function to plot the results."""
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -441,46 +565,47 @@ def visualize(ground_truth: np.ndarray, predicted_trajectories: np.ndarray,koz_l
     plt.show()
 
 if __name__ == '__main__':
-    # --- Simulation Parameters ---
-    initial_state = Evader(x=0.0, y=0.0, theta=np.deg2rad(0), v=10.0)
+    waypoints = np.array([
+        [0, 0],
+        [5, 2],
+        [6, 8],
+        [2, 7],
+        [-2, 4],
+        [0, 0]
+    ])
+
+    # Generate and solve the trajectory
+
+    v = 10
+
+
     
-    M = 20  # Number of predicted trajectories
-    T = 10  # Number of time steps in each trajectory
-    dt = 0.1 # Time delta
+    # Plot the outcome
 
-    koz1 = np.array([(5,2.5),(-15,2.5),(-15,1.5),(5,1.5)])
-    koz2 = np.array([(4,10),(4,2.5),(5,2.5),(5,10)])
-    koz3 = np.array([(5,-2.5),(-15,-2.5),(-15,-1.5),(5,-1.5)])
-    koz4 = np.array([(4,-2.5),(4,-10),(5,-10),(5,-2.5)])
-    koz5 = np.array([(8,10),(8,-10),(9,-10),(9,10)])
-    # koz2 = np.array([(5,)])
-    koz_list = [koz1,koz2,koz3,koz4,koz5]
+    start = time.time()
+    fine_waypoints_by_time = interpolate_by_time(waypoints, dt=0.1, avg_velocity=v)
+    print("get traj time", time.time() - start)
 
-    predicted_evader_trajectories = generate_goal_directed_trajectories(
-                initial_evader_state = initial_state,
-                target_goals =[(6,10),(6,-10)],  # List of [x, y] target coordinates
-                num_samples_per_goal = 5,
-                num_time_steps = T,
-                delta_t = dt,
-                speed_variation_std = 0.1,
-                heading_noise_std = np.deg2rad(15.0),
-                momentum_factor = 0.2,
-                koz_list =koz_list, # List of KOZ vertex arrays
-                koz_avoidance_radius  = 3.0, # How close to a KOZ center to trigger avoidance
-                koz_steer_strength  = 0.5    # How strongly to steer away from KOZs (0-1)
-            )
 
-    # --- Generate a single Ground Truth trajectory for comparison (no noise) ---
-    gt_trajectory = []
-    current_gt_state = initial_state
-    for _ in range(T):
-        gt_trajectory.append(current_gt_state.pos)
-        current_gt_state = forward(current_gt_state, dt)
-    ground_truth_np = np.array(gt_trajectory)
+    fig, ax2 = plt.subplots()
+    ax2.plot(waypoints[:, 0], waypoints[:, 1], 'ro-', markersize=10, linewidth=2, label='Coarse Path')
+    ax2.plot(fine_waypoints_by_time[:, 0], fine_waypoints_by_time[:, 1], 'gx', markersize=5, label=f'Fine Points ({len(fine_waypoints_by_time)})')
+    ax2.set_title(f"Interpolation by Time (dt={0.1}s, v={v}m/s)")
+    ax2.set_xlabel("X Position (m)")
+    ax2.set_ylabel("Y Position (m)")
+    ax2.legend()
+    ax2.grid(True)
+    ax2.axis('equal')
+    
+    plt.suptitle("Waypoint Interpolation Methods")
+    plt.show()
+    
+    start = time.time()
+    results = generate_bspline_trajectory(waypoints)
+    print("get traj time", time.time() - start)
+    
+    # Plot the outcome
+    plot_bspline_results(results)
 
-    # --- Visualize the results ---
 
-    # koz_verts = np.array([(1,1),(2,1),(2,-1),(1,-1),(1,1)])
 
-  
-    visualize(ground_truth=ground_truth_np, predicted_trajectories=predicted_evader_trajectories,koz_list=koz_list)

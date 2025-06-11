@@ -12,9 +12,6 @@ from fov_solver import solve_uav_tracking_with_fov,get_half_planes_vectorized
 import time
 
 
-
-
-
 def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, get_ellipse=True):
 
     map_height, map_width = obstacle_map.shape
@@ -65,17 +62,7 @@ def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, g
         c_global = hull + offset
         transformed_coords.append(c_global)
 
-    
     return transformed_coords
-
-def discritize_obstacle_map(obstacle_map,dim,obs_thresh):
-
-    reshaped_blocks = obstacle_map.reshape(dim[0], 10, dim[1], 10)
-    transposed_blocks = reshaped_blocks.transpose(0, 2, 1, 3)
-    new_map_mean = transposed_blocks.mean(axis=(2, 3))
-    new_map_sum = transposed_blocks.sum(axis=(2, 3))
-
-    return np.where(new_map_mean > obs_thresh,1,0)
 
 
 def map_coordinates(
@@ -333,7 +320,7 @@ if __name__ == "__main__":
 
     # --- Main Simulation & Live Visualization Loop ---
     for ind,t in enumerate(np.arange(0, MAX_SIM_TIME, DT)):
-        evader_prediction = evader.get_predicted_trajectory(N_TRAJ, DT)
+   
         state_guess, control_guess = None, None
         if prev_state_sol is not None:
             state_guess = np.roll(prev_state_sol, -1, axis=1)
@@ -341,9 +328,13 @@ if __name__ == "__main__":
         if prev_control_sol is not None:
             control_guess = np.roll(prev_control_sol, -1, axis=1)
             control_guess[:, -1] = control_guess[:, -2]
-
-
+        
+        
+      
+        #### Solver ######
         start_time = time.perf_counter()
+        evader_prediction = evader.get_predicted_trajectory(N_TRAJ, DT)
+        
         polygonal_obstacles = grab_obstacles(uav_state,obstacle_map,avoidance_region,get_ellipse=False)
 
         optimal_controls, planned_state = solve_uav_tracking_with_fov(
@@ -353,6 +344,8 @@ if __name__ == "__main__":
         )
         end_time = time.perf_counter()
         solve_times.append(end_time - start_time)
+
+        ############### Solver ############
 
         prev_state_sol, prev_control_sol = planned_state, optimal_controls
         v, omega = optimal_controls[:, 0]
