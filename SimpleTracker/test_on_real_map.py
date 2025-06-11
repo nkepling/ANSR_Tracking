@@ -7,10 +7,10 @@ import heapq # Used for the priority queue in A*
 from rrt_grid import RRT
 from scipy.interpolate import splprep, splev
 import cv2
-from skimage import measure
 import math
 from fov_solver import solve_uav_tracking_with_fov,get_half_planes_vectorized
 import time
+
 
 
 
@@ -53,8 +53,7 @@ def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, g
         
         plt.show()
 
-    transformed_coords = {"ellipse": [], "polygon": []}
-    # Define the transformation offset vector
+    transformed_coords = []
     offset = np.array([slice_x_start, slice_y_start])
 
     for c in contours:
@@ -62,25 +61,16 @@ def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, g
             continue
         c = c.squeeze(1)
 
-        if len(c) >= 5 and get_ellipse:
-            ellipse = cv2.fitEllipse(c)
-            (ex, ey), axes, angle = ellipse
-            # Transform ellipse center
-            ellipse_global = ((ex, ey) + offset, axes, angle)
-            transformed_coords["ellipse"].append(ellipse_global)
-        
-        else:
-            # Transform all polygon points
-            hull = cv2.convexHull(c).squeeze(1)
-            c_global = hull + offset
-            transformed_coords['polygon'].append(c_global)
+        hull = cv2.convexHull(c).squeeze(1)
+        c_global = hull + offset
+        transformed_coords.append(c_global)
 
     
     return transformed_coords
 
 def discritize_obstacle_map(obstacle_map,dim,obs_thresh):
 
-    reshaped_blocks = obstacle_map.reshape(100, 10, 100, 10)
+    reshaped_blocks = obstacle_map.reshape(dim[0], 10, dim[1], 10)
     transposed_blocks = reshaped_blocks.transpose(0, 2, 1, 3)
     new_map_mean = transposed_blocks.mean(axis=(2, 3))
     new_map_sum = transposed_blocks.sum(axis=(2, 3))
@@ -271,7 +261,8 @@ if __name__ == "__main__":
 
     # ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-028-000/trajectories/target-pzFVxwf.csv" # good check for non-convex polygon
     # ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-021-000/trajectories/target-giQdQiL.csv" # this one is hard
-    ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-012-000/trajectories/target-pnsVQaV.csv"
+    # ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-012-000/trajectories/target-pnsVQaV.csv"
+    ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-001-000/trajectories/target-THrHZpn.csv"
 
     # Load map and road data
     roads, resolution = load_roads(segmap_file, visualize=False)
@@ -279,8 +270,6 @@ if __name__ == "__main__":
 
     obstacle_map, resolution, (origin_y,origin_x) = load_obstacle_map(obstacle_map_file, depth=10)
     obstacle_map = np.rot90(obstacle_map.T)
-
-    
 
     
     evader_gt_path = get_evader_path_from_file(ground_truth_file_name,obstacle_map,roads,resolution,(origin_y,origin_x))
@@ -306,12 +295,13 @@ if __name__ == "__main__":
     evader = Evader(
         x=evader_start_pos[0], y=evader_start_pos[1],
         theta=initial_angle, # Use the same initial angle
-        v=12.0, path=evader_gt_path, lookahead_distance=5.0
+        v=20.0, path=evader_gt_path, lookahead_distance=5.0
     )
 
     
     # MPC Parameters
-    uav_max_velocity = 15.0
+    uav_max_velocity = 28.0
+
     uav_max_angular_velocity = np.deg2rad(120)
     fov_ellipse_params = {'a': 10.0, 'b': 8.0}
     standoff_distance = 10.0
@@ -354,19 +344,12 @@ if __name__ == "__main__":
 
 
         start_time = time.perf_counter()
-        contours = grab_obstacles(uav_state,obstacle_map,avoidance_region,get_ellipse=False)
-
-
-        polygonal_obstacles = []
-        # for p in contours["polygon"]:
-        #     p_dict = {}
-        #     p_dict["normals"],p_dict["offsets"] = get_half_planes_vectorized(p)
-        #     polygonal_obstacles.append(p_dict)
+        polygonal_obstacles = grab_obstacles(uav_state,obstacle_map,avoidance_region,get_ellipse=False)
 
         optimal_controls, planned_state = solve_uav_tracking_with_fov(
             uav_state, evader_prediction, uav_max_velocity, uav_max_angular_velocity,
             obstacles,polygonal_obstacles, obstacle_weight, fov_ellipse_params, fov_weight, standoff_distance,
-            solver_options, state_guess, control_guess, N_TRAJ, DT,collision_safety_margin=0.1
+            solver_options, state_guess, control_guess, N_TRAJ, DT,  saftey_radius=4, slack_weight=1e6 
         )
         end_time = time.perf_counter()
         solve_times.append(end_time - start_time)
@@ -439,15 +422,9 @@ if __name__ == "__main__":
         )
         ax.add_patch(fov_ellipse)
 
-        ellipse_obstacle = contours.get("ellipse",[])
-        polygon_obstacle = contours.get("polygon",[])
-
-        if ellipse_obstacle:
-            for eps in ellipse_obstacle:
-                local_ellipse_center = eps[0] - [slice_x_start, slice_y_start]
-
-        if polygon_obstacle:
-            for poly in polygon_obstacle:
+      
+        if polygonal_obstacles:
+            for poly in polygonal_obstacles:
                 local_polygon = poly - [slice_x_start, slice_y_start]
                 
                 ax.add_patch(Polygon(local_polygon, facecolor='orange', alpha=0.5, edgecolor='red',label="Obstacle"))

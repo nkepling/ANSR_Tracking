@@ -2,36 +2,7 @@ import numpy as np
 from fov_solver import get_half_planes_vectorized
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
-# def get_half_planes_vectorized(vertices):
-#     """
-#     Computes the half-plane representation (Ax <= b) for a convex polygon
-#     defined by vertices. This version produces OUTWARD-pointing normals.
-#     """
-#     if vertices.shape[0] < 3:
-#         raise ValueError("A polygon must have at least 3 vertices.")
-    
-#     v1_array = vertices
-#     v2_array = np.roll(vertices, -1, axis=0)
-#     edge_vectors = v2_array - v1_array
-#     raw_normals = np.c_[edge_vectors[:, 1], -edge_vectors[:, 0]]
-    
-#     # Calculate the winding order using the shoelace formula
-#     winding_sum = np.sum(v1_array[:, 0] * v2_array[:, 1] - v2_array[:, 0] * v1_array[:, 1])
 
-#     # For CCW winding, raw_normals point outward.
-#     # For CW winding, they point inward, so they must be flipped.
-#     if winding_sum > 0: # Vertices are in Counter-Clockwise (CCW) order
-#         normals = raw_normals 
-#     else: # Vertices are in Clockwise (CW) order
-#         normals = -raw_normals
-    
-#     # Normalize the normals for consistent distance calculations
-#     norms = np.linalg.norm(normals, axis=1)
-#     normals = normals / norms[:, np.newaxis]
-    
-#     offsets = np.einsum('ij,ij->i', normals, v1_array)
-    
-#     return normals, offsets
 
 def calculate_and_print_penetration(point_name, point_coords, normals, offsets):
     """

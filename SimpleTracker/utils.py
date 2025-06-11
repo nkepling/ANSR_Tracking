@@ -533,9 +533,6 @@ if __name__ == "__main__":
 
     plot_belief_on_city_map(segmap_file, mission_description_file, obstacle_map_file, visualize=True)
     obstacle_map, resolution, center = load_obstacle_map(segmap_file,depth=1)
-    
-
-
 
 
         
