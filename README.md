@@ -120,5 +120,5 @@ SimpleTracker/
 
 # Load Gridworld Instructions
 
-![SimpleTracker/utils.py](SimpleTracker/utils.py) has the helper functions to grab road network grid world from segmenation map and obstacles from obstacle map. ![city_1000_1000_seg_segids.npz](city_1000_1000_seg_segids.npz) is the segmentation map array where each index is a object label. ![city_1000_1000.npz](city_1000_1000.npz) is the obstacle map where each cell value is the onstacle height. 
+![SimpleTracker/utils.py](SimpleTracker/utils.py) has the helper functions to grab road network grid world from segmenation map and obstacles from obstacle map. See bottom of utils file for example usage. ![city_1000_1000_seg_segids.npz](city_1000_1000_seg_segids.npz) is the segmentation map array where each index is a object label. ![city_1000_1000.npz](city_1000_1000.npz) is the obstacle map where each cell value is the onstacle height. 
 
