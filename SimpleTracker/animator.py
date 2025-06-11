@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 # --- MODIFICATION: Import Polygon patch ---
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon,Circle
 
 def create_animation(data,filename=None):
     """
@@ -19,6 +19,7 @@ def create_animation(data,filename=None):
     evader_predictions = data["evader_predictions"]
     # --- MODIFICATION: Unpack KOZ data, providing an empty list as a default ---
     keep_out_zones = data.get("keep_out_zones", [])
+    obstacles = data.get("obstacles")
     
     num_frames = len(pursuer_plans)
 
@@ -28,8 +29,6 @@ def create_animation(data,filename=None):
     
     # Determine axis limits dynamically to fit all data
     all_points = np.vstack([pursuer_history, evader_history])
-    ax.set_xlim(-20, 20)
-    ax.set_ylim(-20, 20)
     ax.grid(True)
     ax.set_title("Pursuit-Evasion Simulation")
 
@@ -40,6 +39,12 @@ def create_animation(data,filename=None):
             label = 'Keep-Out Zone' if i == 0 else None
             koz_patch = Polygon(vertices, closed=True, color='red', alpha=0.4, label=label)
             ax.add_patch(koz_patch)
+
+    if obstacles:
+        for obs in obstacles:
+            label = "Obstacles" if i == 0 else None
+            obstac = Circle(tuple((obs[0],obs[1])),obs[2],color="grey",alpha=0.4,label=label)
+            ax.add_patch(obstac)
     
     # --- 2. Initialize Plot Elements ---
     # These are the plot objects that will be updated in each frame

@@ -1,0 +1,152 @@
+{
+  "scenario_id": "scenario-004-000",
+  "mission_class": "Area Search",
+  "scenario_objective": {
+    "objective_name": "locate_dynamic_target",
+    "natural_language_narrative": "Target VRjkOKy is a green SEDAN.1 car. It is priority 1.0 no earlier than 0 and no later than 30. Belief map [[100.0, -100.0], [100.0, 0.0], [200.0, 0.0], [200.0, -100.0], [100.0, -100.0]] is valid in the time window [0, 10]. Target belief map probability is 1.0. Belief map [[-100.0, -100.0], [-100.0, 0.0], [0.0, 0.0], [0.0, -100.0], [-100.0, -100.0]] is valid in the time window [20, 30]. Target belief map probability is 1.0. Target was last known to be traveling at a speed of 12.61 m/s. Keep out zone 0: [[100.0, 100.0], [100.0, 300.0], [300.0, 300.0], [300.0, 100.0], [100.0, 100.0]]. Stay within zone 0: [[-250.0, -250.0], [-250.0, 250.0], [250.0, 250.0], [250.0, -250.0], [-250.0, -250.0]]",
+    "routes_of_interest": [],
+    "areas_of_interest": [],
+    "entities_of_interest": [
+      {
+        "entity_id": "VRjkOKy",
+        "entity_type": "car",
+        "attributes": {
+          "color": "green",
+          "class": "SEDAN.1"
+        },
+        "priority": 1.0,
+        "no_earlier_than": [
+          0
+        ],
+        "no_later_than": [
+          30
+        ],
+        "entity_priors": {
+          "last_known_speed": 12.60568509077292,
+          "location_belief_map": [
+            {
+              "polygon_vertices": [
+                [
+                  [
+                    100.0,
+                    -100.0
+                  ],
+                  [
+                    100.0,
+                    0.0
+                  ],
+                  [
+                    200.0,
+                    0.0
+                  ],
+                  [
+                    200.0,
+                    -100.0
+                  ],
+                  [
+                    100.0,
+                    -100.0
+                  ]
+                ],
+                [
+                  [
+                    -100.0,
+                    -100.0
+                  ],
+                  [
+                    -100.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    -100.0
+                  ],
+                  [
+                    -100.0,
+                    -100.0
+                  ]
+                ]
+              ],
+              "no_earlier_than": [
+                0,
+                20
+              ],
+              "no_later_than": [
+                10,
+                30
+              ],
+              "probability": 1.0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "scenario_constraints": {
+    "spatial_constraints": {
+      "keep_out_zones": [
+        {
+          "keep_out_polygon_vertices": [
+            [
+              100.0,
+              100.0
+            ],
+            [
+              100.0,
+              300.0
+            ],
+            [
+              300.0,
+              300.0
+            ],
+            [
+              300.0,
+              100.0
+            ],
+            [
+              100.0,
+              100.0
+            ]
+          ],
+          "no_earlier_than": [],
+          "no_later_than": []
+        }
+      ],
+      "stay_within_zones": [
+        {
+          "stay_within_polygon_vertices": [
+            [
+              -250.0,
+              -250.0
+            ],
+            [
+              -250.0,
+              250.0
+            ],
+            [
+              250.0,
+              250.0
+            ],
+            [
+              250.0,
+              -250.0
+            ],
+            [
+              -250.0,
+              -250.0
+            ]
+          ],
+          "no_earlier_than": [],
+          "no_later_than": []
+        }
+      ]
+    }
+  },
+  "scenario_thread": "combined",
+  "pre_mission_context": [],
+  "coordinate_is_ned": true
+}

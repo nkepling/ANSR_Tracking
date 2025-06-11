@@ -5,7 +5,7 @@ import numpy as np
 from dummy_pwm import Evader, forward, get_straight_away_trajectories, generate_goal_directed_trajectories
 import animator
 import track_ipotp as tracker # Assuming your solver is in track_ipotp.py
-
+from opti_lib import solve_uav_tracking
 import jax
 jax.config.update("jax_enable_x64", True)
 import time
@@ -16,9 +16,9 @@ def run_simulation():
     Runs a multi-step pursuit-evasion simulation using the advanced JAX+IPOPT solver.
     """
     # --- 1. Simulation Setup ---
-    T = 10    # Planning horizon
-    dt = 0.1    # Time step duration
-    M = 1       # Number of evader trajectories to predict (e.g., 1 straight, 2 up, 2 down)
+    T = 15    # Planning horizon
+    dt = 0.5    # Time step duration
+    M = 2       # Number of evader trajectories to predict (e.g., 1 straight, 2 up, 2 down)
     sim_steps = 50
 
     target_goals =[(6,-11),(6,11)]
@@ -46,15 +46,23 @@ def run_simulation():
     solve_time_history = []
 
     # KOZ definitions from your script
-    # koz1 = np.array([(4,2.5),(-15,2.5),(-15,1.5),(5,1.5),(5,10),(4,10)])
+    koz1 = np.array([(4,2.5),(-15,2.5),(-15,1.5),(5,1.5),(5,10),(4,10)])
     koz1 = np.array([(5,2.5),(-15,2.5),(-15,1.5),(5,1.5)])
     koz2 = np.array([(4,10),(4,2.5),(5,2.5),(5,10)])
     koz3 = np.array([(5,-2.5),(-15,-2.5),(-15,-1.5),(5,-1.5)])
     koz4 = np.array([(4,-2.5),(4,-10),(5,-10),(5,-2.5)])
     koz5 = np.array([(8,10),(8,-10),(9,-10),(9,10)])
+
+
     
-    # koz2 = np.array([(5,)])
+    # # koz2 = np.array([(5,)])
     koz_list = [koz1,koz2,koz3,koz4,koz5]
+
+    obstacles = [
+        (np.array([0.0, 0.0]), 1.0),
+        (np.array([3.0, 0.0]), 1.0)
+    ]
+    
 
 
     print("Starting simulation with JAX + Class-based IPOPT solver...")
@@ -90,7 +98,8 @@ def run_simulation():
             "evader_trajectories": predicted_evader_trajectories,
             "evader_penalty_weight": 00.0, # Make sure this matches what track_ipotp.py expects
             "min_evader_dist": min_separation_dist,
-            "keep_out_zones": koz_list 
+            "obstacles": obstacles,
+            "obstacle_penalty_weight": 600
             # If track_ipotp.py expects koz_penalty_weight, add it here.
             # "koz_penalty_weight": 2000.0 
         }
@@ -100,19 +109,17 @@ def run_simulation():
         ub = np.inf * np.ones(n_vars)
 
         # Assuming track_ipotp.py uses hard KOZ constraints
-        n_koz_cons = T * len(problem_data["keep_out_zones"])
+        
         # Assuming track_ipotp.py still has evader min distance as penalty, not hard constraint
-        n_cons = 2 + (T - 1) + n_koz_cons # start_pos + motion + KOZ
+        n_cons = 2 + (T - 1) # start_pos + motion + KOZ
       
         cl = np.concatenate([
             np.zeros(2),             
             -np.inf * np.ones(T - 1),
-            np.zeros(n_koz_cons) # KOZ constraint >= 0
         ])
         cu = np.concatenate([
             np.zeros(2),             
             np.zeros(T - 1),         
-            np.inf * np.ones(n_koz_cons)
         ])
         
 
@@ -123,8 +130,10 @@ def run_simulation():
             x0 = prev_pursuer_plan
 
         start_time = time.perf_counter()
-        pursuer_plan, info = tracker.solve(x0, problem_data, lb, ub, cl, cu)
+        # pursuer_plan, info = tracker.solve(x0, problem_data, lb, ub, cl, cu)
+        pursuer_plan,u = solve_uav_tracking(predicted_evader_trajectories[0], pursuer_max_velo, N=T, dt=dt)
         end_time = time.perf_counter()
+
         
         solve_time = end_time - start_time
         solve_time_history.append(solve_time)
@@ -170,7 +179,8 @@ def run_simulation():
         "pursuer_plans": pursuer_plans_history, 
         "evader_predictions": evader_predictions_history, 
         "solve_times": solve_time_history, # Corrected key name
-        "keep_out_zones": koz_list
+        "keep_out_zones": koz_list,
+        "obstacles": obstacles
     }
 
 

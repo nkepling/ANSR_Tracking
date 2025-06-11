@@ -31,7 +31,8 @@ class PursuitProblem:
     # --- MODIFICATION: Removed koz_penalty_weight from constructor ---
     def __init__(self, T, dt, max_velo, start_pos, evader_trajectories, 
                  min_evader_dist, evader_penalty_weight,
-                 keep_out_zones,
+                 obstacles,
+                 obstacle_penalty_weight,
                  logsumexp_alpha=0.1):
         # --- Store static problem data ---
         self.T = T
@@ -46,12 +47,27 @@ class PursuitProblem:
         self.min_evader_dist_sq = min_evader_dist**2
         self.alpha = logsumexp_alpha
         self.evader_penalty_weight = evader_penalty_weight
+        self.obstacle_penalty_weight = obstacle_penalty_weight 
 
-        self.kozs = []
-        if keep_out_zones:
-            for vertices in keep_out_zones:
-                A, b = get_half_planes(vertices)
-                self.kozs.append({'A': jnp.array(A), 'b': jnp.array(b)})
+        # self.kozs = []
+
+        if obstacles:
+            obstacle_centers = jnp.array([obs[0] for obs in obstacles], dtype=jnp.float64)
+            obstacle_radii = jnp.array([obs[1] for obs in obstacles], dtype=jnp.float64)
+        else:
+            obstacle_centers = jnp.array([], dtype=jnp.float64).reshape(0, 2) # Empty 0x2 array
+            obstacle_radii = jnp.array([], dtype=jnp.float64)
+            
+        self.obstacle_centers = obstacle_centers
+        self.obstacle_radii = obstacle_radii
+        self.num_obstacles = len(obstacles)
+
+
+
+        # if keep_out_zones:
+        #     for vertices in keep_out_zones:
+        #         A, b = get_half_planes(vertices)
+        #         self.kozs.append({'A': jnp.array(A), 'b': jnp.array(b)})
 
         # --- Define JAX functions ---
         def _objective_jax(x):
@@ -67,9 +83,19 @@ class PursuitProblem:
             dist_to_evader_sq = jnp.sum((pursuer_path - self.avg_evader_path)**2, axis=1)
             evader_violation = self.min_evader_dist_sq - dist_to_evader_sq
             evader_penalty = jnp.sum(jnp.maximum(0, evader_violation))
+
+
+            total_obstacle_penalty = 0.0 # Initialize to float
             
+            if self.num_obstacles > 0:
+                diffs_to_obstacles = pursuer_path[:, jnp.newaxis, :] - self.obstacle_centers[jnp.newaxis, :, :]
+                
+                dist_sq_to_obstacles = jnp.sum(diffs_to_obstacles**2, axis=-1)
+                violation_per_step_per_obs = self.obstacle_radii[jnp.newaxis, :]**2 - dist_sq_to_obstacles
+                total_obstacle_penalty = jnp.sum(jnp.maximum(0, violation_per_step_per_obs)**2)
+
             # --- Final Combined Objective ---
-            return base_objective + self.evader_penalty_weight * evader_penalty
+            return base_objective + self.evader_penalty_weight * evader_penalty + self.obstacle_penalty_weight * total_obstacle_penalty
 
         def _constraints_jax(x):
             pursuer_path = x.reshape((self.T, 2))
@@ -80,17 +106,17 @@ class PursuitProblem:
             motion_violation = jnp.sum(motion_vectors**2, axis=1) - self.max_dist_sq
             
             # --- MODIFICATION: KOZ avoidance is now a hard constraint again ---
-            koz_violations = []
-            if self.kozs:
-                for k in range(self.T):
-                    for koz in self.kozs:
-                        z_terms = (koz['A'] @ pursuer_path[k] - koz['b']) / self.alpha
-                        z_max = jnp.max(z_terms)
-                        # Subtract z_max before exp to prevent overflow, add it back (scaled by alpha) after log
-                        logsumexp = self.alpha * (z_max + jnp.log(jnp.sum(jnp.exp(z_terms - z_max)) + 1e-10)) # Add small epsilon for log(0)
-                        koz_violations.append(logsumexp)
+            # koz_violations = []
+            # if self.kozs:
+            #     for k in range(self.T):
+            #         for koz in self.kozs:
+            #             z_terms = (koz['A'] @ pursuer_path[k] - koz['b']) / self.alpha
+            #             z_max = jnp.max(z_terms)
+            #             # Subtract z_max before exp to prevent overflow, add it back (scaled by alpha) after log
+            #             logsumexp = self.alpha * (z_max + jnp.log(jnp.sum(jnp.exp(z_terms - z_max)) + 1e-10)) # Add small epsilon for log(0)
+            #             koz_violations.append(logsumexp)
             
-            return jnp.concatenate([start_pos_violation, motion_violation, jnp.array(koz_violations)])
+            return jnp.concatenate([start_pos_violation, motion_violation])
 
         # --- JIT-compile all necessary functions ---
         self.objective_jit = jax.jit(_objective_jax)
@@ -105,8 +131,7 @@ class PursuitProblem:
         
         # --- Pre-calculate Hessian Sparsity Structure ---
         # --- MODIFICATION: Update number of constraints to include KOZ ---
-        n_koz_cons = self.T * len(self.kozs)
-        n_cons = 2 + (self.T - 1) + n_koz_cons
+        n_cons = 2 + (self.T - 1)
         
         x_dummy = np.zeros(self.T * 2, dtype=np.float64)
         lagrange_dummy = np.zeros(n_cons, dtype=np.float64)
