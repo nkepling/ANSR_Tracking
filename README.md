@@ -106,6 +106,7 @@ SimpleTracker/
 ├─- dummy_pwm.py    # Contains PWM code: Evader kinematic model and functions to generate predicted trajectories
 |-- ipopt_sim.py # Simulation script for ipopt solver
 |-- track_ipopt.py # Trajectory optimizatio sovler using IPOPT solver. 
+|-- utils.py # load gridworld, do coordinate transfroms, plot stuff. 
 ```
 
 ## Demo
@@ -115,4 +116,9 @@ SimpleTracker/
 ## Demo 
 
 ![assets/pursuit_with_hybrid_constraints.gif](assets/pursuit_with_hybrid_constraints.gif)
+
+
+# Load Gridworld Instructions
+
+![SimpleTracker/utils.py](SimpleTracker/utils.py) has the helper functions to grab road network grid world from segmenation map and obstacles from obstacle map. ![city_1000_1000_seg_segids.npz](city_1000_1000_seg_segids.npz) is the segmentation map array where each index is a object label. ![city_1000_1000.npz](city_1000_1000.npz) is the obstacle map where each cell value is the onstacle height. 
 

@@ -6,16 +6,42 @@ from functools import partial
 from matplotlib import transforms
 from matplotlib.path import Path
 
-def discritize_obstacle_map(obstacle_map,dim,obs_thresh):
+def discretize_obstacle_map(obstacle_map: np.ndarray, dim: tuple[int, int], obs_thresh: float) -> np.ndarray:
+    """
+    Downsamples a high-resolution obstacle map to a lower resolution.
 
-    reshaped_blocks = obstacle_map.reshape(dim[0], 10, dim[1], 10)
-    transposed_blocks = reshaped_blocks.transpose(0, 2, 1, 3)
-    new_map_mean = transposed_blocks.mean(axis=(2, 3))
-    new_map_sum = transposed_blocks.sum(axis=(2, 3))
+    A cell in the new grid is marked as an obstacle if the percentage of
+    obstacle cells in its corresponding high-resolution region exceeds a
+    threshold.
 
-    return np.where(new_map_mean > obs_thresh,1,0)
+    Args:
+        obstacle_map (np.ndarray): The high-resolution 2D obstacle map.
+                                   Assumes 1 for obstacle, 0 for free space.
+        dim (tuple[int, int]): The new, smaller grid dimensions (rows, cols).
+        obs_thresh (float): The threshold (0.0 to 1.0) for marking a new cell
+                            as an obstacle. For example, 0.25 means a cell is
+                            an obstacle if more than 25% of its area is blocked.
 
+    Raises:
+        ValueError: If the original map dimensions are not perfectly divisible
+                    by the new dimensions.
 
+    Returns:
+        np.ndarray: The new, lower-resolution obstacle map.
+    """
+    orig_rows, orig_cols = obstacle_map.shape
+    new_rows, new_cols = dim
+    if orig_rows % new_rows != 0 or orig_cols % new_cols != 0:
+        raise ValueError(
+            f"Original map shape {obstacle_map.shape} must be divisible by the new dimensions {dim}."
+        )
+
+    block_rows = orig_rows // new_rows
+    block_cols = orig_cols // new_cols
+    reshaped_map = obstacle_map.reshape(new_rows, block_rows, new_cols, block_cols)
+    transposed_map = reshaped_map.transpose(0, 2, 1, 3)
+    block_means = transposed_map.mean(axis=(2, 3))
+    return np.where(block_means > obs_thresh, 1, 0)
 
 
 def load_mission(mission_file):
@@ -28,8 +54,6 @@ def load_mission(mission_file):
     constaints = d["scenario_constraints"]
     
     return (mission, eoi,constaints)
-
-
 
 
 def coordinate_to_pixel(coord, resolution, center):
@@ -46,22 +70,6 @@ def rotate_pixel(pixel, shape):
     # shape: (height, width)
     x, y = pixel
     return y, shape[0] - 1 - x
-
-def load_map_data(filename):
-    """
-    Load the map data from a .npz file.
-    """
-    npz = np.load(filename)
-    data = npz["data"]
-    center = npz["center"]
-    resolution = float(npz["resolution"][0])
-
-    map_width = data.shape[1]
-    map_height = data.shape[0]
-    origin_x = center[0] - (map_width / 2) * resolution
-    origin_y = center[1] - (map_height / 2) * resolution
-    print(f"Map Origin: ({origin_x}, {origin_y})")
-
 
 def load_roads(filename,visualize=True):
     seg_map = np.load(filename)
@@ -95,7 +103,7 @@ def get_belief_map(eoi):
 
 def load_obstacle_map(filename,depth=0):
     """
-    Load the obstacle map from a .npz file.
+    Load the obstacle map from a .npz file. Depth is flying heigh of UAV
     """
     npz = np.load(filename)
     data = npz["data"]
@@ -119,8 +127,6 @@ def plot_belief_on_city_map(segmap_file, mission_description_file, obstacle_map_
     roads, resolution = load_roads(segmap_file, visualize=False)
     roads = roads.T
     roads = np.rot90(roads) 
-
-  
 
     mission, eoi, constraints = load_mission(mission_description_file)
     belief_map = get_belief_map(eoi)
@@ -244,6 +250,60 @@ def plot_belief_on_city_map(segmap_file, mission_description_file, obstacle_map_
     ax.set_xlabel("World X")
     ax.set_ylabel("World Y")
     plt.show()
+
+
+def plot_map(city_map,save_file=None):
+
+    fig,ax = plt.subplots()
+    ax.imshow(city_map,origin="lower",cmap="binary")
+
+    if save_file is not None:
+        plt.savefig(save_file)
+
+    plt.show()
+
+
+def get_evader_path_from_file(file_name,obstacle_map,roads,resolution,center):
+    """Plot evader path with roads
+    """
+
+    origin_x,origin_y = center
+    data = np.loadtxt(file_name, delimiter=',', dtype=float)
+    im_width = roads.shape[1]
+    im_height = roads.shape[0]
+
+    im_center_x = im_width // 2
+    im_center_y = im_height // 2
+    
+    origin_pixel = coordinate_to_pixel([0, 0], resolution, [origin_x, origin_y])
+    origin_pixel_rot = rotate_pixel(origin_pixel, roads.shape)
+
+    partial_coordinate_to_pixel = partial(coordinate_to_pixel, 
+                                          resolution=resolution, 
+                                          center=[origin_x, origin_y]) # Corrected origin format if needed
+    
+    pixel_coords = np.apply_along_axis(partial_coordinate_to_pixel, 
+                                     axis=1, 
+                                     arr=data[:, :2])
+    rotated_pixels = np.apply_along_axis(lambda x: rotate_pixel([x[0],x[1]],obstacle_map.shape),axis=1,arr=pixel_coords)
+    start_pos = pixel_coords[0, :]
+    end_pos = pixel_coords[-1, :]
+
+    print("Generating plot...")
+    fig, ax = plt.subplots(figsize=(12, 12))
+    ax.scatter(origin_pixel_rot[0], origin_pixel_rot[1], c='red', s=50, label='Origin (0,0)')
+    ax.imshow(obstacle_map, cmap="binary", origin='lower') 
+    ax.imshow(roads, cmap="grey", alpha=0.4)
+    ax.plot(rotated_pixels[:, 0], rotated_pixels[:, 1], 'red', lw=2, label="Evader's Path")
+    ax.scatter(rotated_pixels[0][0], rotated_pixels[0][1], c='lime', s=150, label='Start', zorder=5, marker='o', edgecolors='black')
+    ax.scatter(rotated_pixels[-1][0], rotated_pixels[-1][1], c='red', s=150, label='End', zorder=5, marker='X')
+    ax.set_title("Evader Path on City Map")
+    ax.set_xlabel("X Pixel Coordinate")
+    ax.set_ylabel("Y Pixel Coordinate")
+    ax.legend()
+    plt.show()
+
+    return rotated_pixels
 
 
     # segmentation colors for different categories
@@ -528,14 +588,46 @@ SEGID_COLORS = np.array([
 
 
 if __name__ == "__main__":
-
     segmap_file = "city_1000_1000_seg_segids.npz"
     mission_description_file = "description.json"
     obstacle_map_file = "city_1000_1000.npz"    
 
 
+    """Plot roads, obstacles, beleif region, 
+    """
+    # plot mission details on 1000x1000gridworld 
     plot_belief_on_city_map(segmap_file, mission_description_file, obstacle_map_file, visualize=True)
-    obstacle_map, resolution, center = load_obstacle_map(segmap_file,depth=1)
+
+
+    #load binary numpy array where 1s are roads 
+    roads, resolution = load_roads(segmap_file, visualize=False)
+    roads = np.rot90(roads.T)
+
+
+    #load binary numpy array where 1s are obstacles, depth is obstacle height
+    obstacle_map, resolution, (origin_y,origin_x) = load_obstacle_map(obstacle_map_file, depth=10)
+    obstacle_map = np.rot90(obstacle_map.T)
+
+    dim = (100,100)
+    obs_thresh = 0.5
+
+    #down sample binary numpy array to lower resolutoin grid world. dim is gridworld size
+    low_res_map = discretize_obstacle_map(obstacle_map,dim,obs_thresh)
+    plot_map(low_res_map)
+
+
+
+
+    
+ 
+
+
+
+    
+
+
+
+
 
 
         

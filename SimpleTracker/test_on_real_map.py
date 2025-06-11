@@ -196,45 +196,7 @@ def get_ground_truth_evader_path():
 
     return smoothed_path
 
-def get_evader_path_from_file(file_name,obstacle_map,roads,resolution,center):
 
-    origin_x,origin_y = center
-    data = np.loadtxt(file_name, delimiter=',', dtype=float)
-    im_width = roads.shape[1]
-    im_height = roads.shape[0]
-
-    im_center_x = im_width // 2
-    im_center_y = im_height // 2
-    
-    origin_pixel = coordinate_to_pixel([0, 0], resolution, [origin_x, origin_y])
-    origin_pixel_rot = rotate_pixel(origin_pixel, roads.shape)
-
-    partial_coordinate_to_pixel = partial(coordinate_to_pixel, 
-                                          resolution=resolution, 
-                                          center=[origin_x, origin_y]) # Corrected origin format if needed
-    
-    pixel_coords = np.apply_along_axis(partial_coordinate_to_pixel, 
-                                     axis=1, 
-                                     arr=data[:, :2])
-    rotated_pixels = np.apply_along_axis(lambda x: rotate_pixel([x[0],x[1]],obstacle_map.shape),axis=1,arr=pixel_coords)
-    start_pos = pixel_coords[0, :]
-    end_pos = pixel_coords[-1, :]
-
-    print("Generating plot...")
-    fig, ax = plt.subplots(figsize=(12, 12))
-    ax.scatter(origin_pixel_rot[0], origin_pixel_rot[1], c='red', s=50, label='Origin (0,0)')
-    ax.imshow(obstacle_map, cmap="binary", origin='lower') 
-    ax.imshow(roads, cmap="grey", alpha=0.4)
-    ax.plot(rotated_pixels[:, 0], rotated_pixels[:, 1], 'red', lw=2, label="Evader's Path")
-    ax.scatter(rotated_pixels[0][0], rotated_pixels[0][1], c='lime', s=150, label='Start', zorder=5, marker='o', edgecolors='black')
-    ax.scatter(rotated_pixels[-1][0], rotated_pixels[-1][1], c='red', s=150, label='End', zorder=5, marker='X')
-    ax.set_title("Evader Path on City Map")
-    ax.set_xlabel("X Pixel Coordinate")
-    ax.set_ylabel("Y Pixel Coordinate")
-    ax.legend()
-    plt.show()
-
-    return rotated_pixels
 
 def main():
     pass
