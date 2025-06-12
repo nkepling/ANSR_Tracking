@@ -1,5 +1,39 @@
 import casadi as ca
 import numpy as np
+import time
+import cv2
+
+
+def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, get_ellipse=True):
+
+    map_height, map_width = obstacle_map.shape
+    center_x, center_y = int(uav_state[0]), int(uav_state[1])
+    half = avoidance_region // 2
+    slice_x_start, slice_x_end = max(center_x - half, 0), min(center_x + half, map_width)
+    slice_y_start, slice_y_end = max(center_y - half, 0), min(center_y + half, map_height)
+    map_slice = obstacle_map[slice_y_start:slice_y_end, slice_x_start:slice_x_end]
+    
+    binary_image = (map_slice * 255).astype(np.uint8)
+    kernel = np.ones((3,3), np.uint8)
+
+    closed_image = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
+
+    padded_image = cv2.copyMakeBorder(closed_image, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    contours, _ = cv2.findContours(padded_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    transformed_coords = []
+    offset = np.array([slice_x_start, slice_y_start])
+
+    for c in contours:
+        if c.shape[0] < 3:  # Need at least 3 points for a polygon
+            continue
+        c = c.squeeze(1)
+
+        hull = cv2.convexHull(c).squeeze(1)
+        c_global = hull + offset
+        transformed_coords.append(c_global)
+
+    return transformed_coords
 
 
 def get_half_planes_vectorized(vertices):
@@ -68,12 +102,12 @@ def compute_min_dist_sq_to_polygon_casadi(p, vertices):
 
 def solve_uav_tracking_with_fov(
     initial_state,
-    reference_trajectory,
+    tracking_weight,
+    predicted_trajectories,
+    probabilities,
     max_velocity,
     max_angular_velocity,
-    obstacles,
     polygonal_obstacles,
-    obstacle_weight,
     fov_params,
     fov_weight,
     standoff_distance,
@@ -88,6 +122,7 @@ def solve_uav_tracking_with_fov(
     """
     Solves the UAV tracking problem, accepting an initial guess to warm-start the solver.
     """
+    start = time.perf_counter()
     opti = ca.Opti()
 
     # ---- State and Control Variables ----
@@ -107,65 +142,60 @@ def solve_uav_tracking_with_fov(
         opti.subject_to(opti.bounded(-max_angular_velocity, omega[k], max_angular_velocity))
 
 
-    tracking_objective = 0
+ # --- MODIFICATION START: Probabilistic Tracking Objective ---
+    total_tracking_objective = 0
+    total_fov_penalty = 0
+    polygon_slack_penalty = 0
     standoff_dist_sq = standoff_distance**2
-    epsilon = 1e-5 
-    for k in range(N + 1):
-        ref_index = min(k, reference_trajectory.shape[1] - 1)
-        dist_sq = ca.sumsqr(pos[:, k] - reference_trajectory[:, ref_index]) + epsilon
-        # Penalize the error from the ideal standoff distance
-        tracking_objective += (dist_sq - standoff_dist_sq)**2
-
-
-    obstacle_penalty = 0
-    for obs in obstacles:
-        for k in range(N + 1):
-            obstacle_penalty += ca.fmax(0, obs[2]**2 - ca.sumsqr(pos[:, k] - obs[:2]))**2
-
-
-    # saftey bubble constraint
-
+    epsilon = 1e-5
+    a = fov_params['a']
+    b = fov_params['b']
     num_polygons = len(polygonal_obstacles)
-    if num_polygons > 0:
-        slack_poly = opti.variable(num_polygons, N + 1)
-
-
     safety_radius_sq = saftey_radius**2
+    slack_poly = opti.variable(num_polygons, N + 1)
 
-    # for k in range(N + 1):
-    #         # Iterate through each polygonal obstacle
-    #         for poly_verts in polygonal_obstacles:
-    #             # Calculate the minimum squared distance from the UAV to the polygon
-    #             min_dist_sq_to_poly = compute_min_dist_sq_to_polygon_casadi(pos[:, k], poly_verts)
-                
-    #             # Add the non-penetration constraint to the optimizer
-    #             opti.subject_to(min_dist_sq_to_poly >= safety_radius_sq)
-            
-
-
-    polygon_slack_penalty = 0  # Initialize penalty term for slack
     for k in range(N + 1):
-        for i, poly_verts in enumerate(polygonal_obstacles):
-            s_ik = slack_poly[i, k]
-            opti.subject_to(s_ik >= 0)
-
-            min_dist_sq_to_poly = compute_min_dist_sq_to_polygon_casadi(pos[:, k], poly_verts)
-            opti.subject_to(min_dist_sq_to_poly >= safety_radius_sq - s_ik)
-            polygon_slack_penalty += s_ik**2
-
-    fov_penalty = 0
-    a = fov_params['a']; b = fov_params['b']
-    for k in range(N + 1):
-        ref_index = min(k, reference_trajectory.shape[1] - 1)
-        evader_pos = reference_trajectory[:, ref_index]
-        vec_world = evader_pos - pos[:, k]
-        cos_th = ca.cos(theta[k]); sin_th = ca.sin(theta[k])
-        x_local = vec_world[0] * cos_th + vec_world[1] * sin_th
-        y_local = -vec_world[0] * sin_th + vec_world[1] * cos_th
-        violation = ((x_local - a) / a)**2 + (y_local / b)**2 - 1
-        fov_penalty += ca.fmax(0, violation)
         
-    objective = tracking_objective + obstacle_weight * obstacle_penalty + fov_weight * fov_penalty + slack_weight * polygon_slack_penalty
+        # --- 1. Polygonal Obstacle Logic (for time step 'k') ---
+        if num_polygons > 0:
+            for i, poly_verts in enumerate(polygonal_obstacles):
+                s_ik = slack_poly[i, k]
+                opti.subject_to(s_ik >= 0)
+
+                min_dist_sq_to_poly = compute_min_dist_sq_to_polygon_casadi(pos[:, k], poly_verts)
+                opti.subject_to(min_dist_sq_to_poly >= safety_radius_sq - s_ik)
+                polygon_slack_penalty += s_ik**2
+                
+
+        tracking_penalty_k = 0
+        fov_penalty_k = 0
+        
+        for j, p_j in enumerate(probabilities):
+            # Get the j-th reference trajectory
+            ref_traj_j = predicted_trajectories[j]
+            ref_index = min(k, ref_traj_j.shape[1] - 1)
+            evader_pos = ref_traj_j[:, ref_index]
+            
+            # --- Tracking Calculation ---
+            dist_sq = ca.sumsqr(pos[:, k] - evader_pos) + epsilon
+
+            tracking_penalty_k += p_j * (dist_sq - standoff_dist_sq)**2
+            
+            # --- FOV Calculation ---
+            vec_world = evader_pos - pos[:, k]
+            cos_th = ca.cos(theta[k])
+            sin_th = ca.sin(theta[k])
+            x_local = vec_world[0] * cos_th + vec_world[1] * sin_th
+            y_local = -vec_world[0] * sin_th + vec_world[1] * cos_th
+            violation = ((x_local - a) / a)**2 + (y_local / b)**2 - 1
+            fov_penalty_k += p_j * ca.fmax(0, violation)
+
+        # Add the accumulated penalties for this time step to the totals
+        total_tracking_objective += tracking_penalty_k
+        total_fov_penalty += fov_penalty_k
+
+
+    objective = tracking_weight * total_tracking_objective +  fov_weight * total_fov_penalty + slack_weight * polygon_slack_penalty
     opti.minimize(objective)
 
     # --- MODIFICATION START: Provide Initial Guess to Solver ---
@@ -173,22 +203,34 @@ def solve_uav_tracking_with_fov(
         opti.set_initial(state, initial_state_guess)
     if initial_control_guess is not None:
         opti.set_initial(control, initial_control_guess)
-    # --- MODIFICATION END ---
 
-    # ---- Solve ----
-    p_opts = {"expand": True}
+    p_opts = {"expand": True, "print_time": True}
+    
+    # Solver options: suppress IPOPT startup banner and iteration info
+    s_opts = {"ipopt": {"print_level": 0, "sb": "yes"}}
     s_opts = solver_opts
     opti.solver('ipopt', p_opts, s_opts)
 
+    end = time.perf_counter()
+    construction_time = end -start
+
+    print(f"Total Construction time:  {(end-start)*1000:.3f} ms")
+
+
+    
     try:
         sol = opti.solve()
-        return sol.value(control), sol.value(state)
+        return sol.value(control), sol.value(state),construction_time,True
     except RuntimeError:
         print("Solver failed at this step! Returning zero control.")
         if initial_state_guess is None:
             fallback_state = np.tile(initial_state.reshape(3, 1), (1, N + 1))
             fallback_control = np.zeros((2, N))
-            return fallback_control, fallback_state
+            return fallback_control, fallback_state,construction_time,False
         else:
-            return initial_control_guess, initial_state_guess
+            return initial_control_guess, initial_state_guess,construction_time,False
+        
 
+
+def track():
+    pass

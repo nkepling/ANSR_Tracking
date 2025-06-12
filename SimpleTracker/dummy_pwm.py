@@ -1,7 +1,7 @@
 import numpy as np
 from dataclasses import dataclass
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon,Arrow
 import math
 import typing
 from rrt import RRT
@@ -9,7 +9,273 @@ import copy
 import casadi as ca
 import time
 from scipy.interpolate import splprep, splev
+from utils import *
 
+from scipy.sparse import lil_matrix
+from scipy.sparse.csgraph import connected_components, shortest_path,yen,breadth_first_tree
+from skimage.morphology import skeletonize, thin
+
+
+def predict_evader_paths(
+    evader_location: np.ndarray,
+    evader_direction_vector: np.ndarray,
+    graph_csr,
+    centroids: np.ndarray,
+    low_res_skeleton_map,
+    N: int,
+    dt: float,
+    max_depth: int = 15,
+    avg_velocity: float = 5.0,
+    similarity_threshold: float = 0.0
+) -> list[np.ndarray]:
+    """
+    Map evader location to graph, computes BFS paths, filters by direction, then returns 
+    interpolated waypoints for each path of at most length N.
+    """
+    
+
+    start_node = map_evader_location_to_graph(
+        evader_location, 
+        centroids, 
+        low_res_skeleton_map # <-- PASS THE MAP HERE
+    )
+    
+
+
+    if start_node is None:
+        raise ValueError
+
+    print(f"DEBUG: Mapped evader location {evader_location.round(2)} to start_node {start_node}") # <-- ADD THIS
+
+    all_paths = bfs_explore_paths_to_depth(graph_csr, start_node, max_depth)
+
+
+
+    print(f"DEBUG: BFS found {len(all_paths)} total paths.")
+    
+    frontier_paths = get_paths_to_frontier(all_paths, max_depth)
+
+    if not frontier_paths:
+        return []
+
+    low_res_map_shape = centroids.shape[:2]
+    forward_paths = filter_paths_by_direction(
+        candidate_paths=frontier_paths,
+        start_node_idx=start_node,
+        evader_direction_vector=evader_direction_vector,
+        centroids=centroids,
+        low_res_map_shape=low_res_map_shape,
+        similarity_threshold=similarity_threshold
+    )
+    print(f"DEBUG: {len(forward_paths)} paths remained after directional filtering.") # <-- ADD THIS
+
+    predicted_trajectories = []
+    for path_indices in forward_paths.values():
+        coarse_waypoints = []
+        for node_idx in path_indices:
+            r, c = np.unravel_index(node_idx, low_res_map_shape)
+            coarse_waypoints.append(centroids[r, c])
+        coarse_waypoints_np = np.array(coarse_waypoints)
+
+
+        coarse_waypoints_np[0] = evader_location
+
+        if len(coarse_waypoints_np) < 2:
+            continue
+        
+        dense_trajectory = interpolate_by_time(coarse_waypoints_np, dt, avg_velocity)
+        
+        if len(dense_trajectory) > N:
+            dense_trajectory = dense_trajectory[:N]
+            
+        predicted_trajectories.append(dense_trajectory)
+        
+    return predicted_trajectories
+
+
+def map_evader_location_to_graph(
+    evader_location: np.ndarray, 
+    centroids: np.ndarray, 
+    valid_nodes_map: np.ndarray
+) -> int:
+    """
+    Finds the closest VALID node in the graph to a continuous real-world location.
+
+    Args:
+        evader_location (np.ndarray): The (y, x) coordinates of the evader.
+        centroids (np.ndarray): A (rows, cols, 2) array of the (y, x) coordinates for each node.
+        valid_nodes_map (np.ndarray): A (rows, cols) binary map where 1 indicates a valid
+                                      node in the graph and 0 indicates no node.
+
+    Returns:
+        int or None: The flattened integer index of the closest valid node, or None if no
+                     valid nodes exist in the map.
+    """
+    # Calculate the squared Euclidean distance from the evader's location to every centroid
+    distances_sq = np.sum((centroids - evader_location)**2, axis=2)
+    
+    # --- THIS IS THE FIX ---
+    # Invalidate the distances for any node that is not on a road.
+    # By setting their distance to infinity, they will never be chosen as the minimum.
+    distances_sq[valid_nodes_map == 0] = np.inf
+    
+    # Find the 2D index (row, col) of the centroid with the minimum distance
+    min_idx_flat = np.argmin(distances_sq)
+    r, c = np.unravel_index(min_idx_flat, distances_sq.shape)
+    
+    # Handle the edge case where no valid nodes exist at all
+    if distances_sq[r, c] == np.inf:
+        return None # No valid, reachable node found
+    
+    # Convert the 2D index to the flattened 1D index used by graph functions
+    num_cols = centroids.shape[1]
+    node_idx = r * num_cols + c
+    
+    return node_idx
+
+def calculate_cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+    """
+    Calculates the cosine similarity between two vectors.
+
+    Returns:
+        float: A value between -1 (opposite) and 1 (same direction).
+               Returns 0 if either vector has zero length.
+    """
+    norm_a = np.linalg.norm(vec_a)
+    norm_b = np.linalg.norm(vec_b)
+
+    if norm_a == 0 or norm_b == 0:
+        return 0.0  # Cannot compute similarity if one vector is a zero vector
+
+    # np.dot(vec_a, vec_b) / (norm_a * norm_b)
+    return np.dot(vec_a, vec_b) / (norm_a * norm_b)
+
+
+def filter_paths_by_direction(
+    candidate_paths: dict,
+    start_node_idx: int,
+    evader_direction_vector: np.ndarray,
+    centroids: np.ndarray,
+    low_res_map_shape: tuple[int, int],
+    similarity_threshold: float = 0.0
+) -> dict:
+    """
+    Filters a dictionary of paths to keep only those aligned with an evader's direction.
+
+    Args:
+        candidate_paths (dict): A dictionary mapping a destination node to its path list.
+        start_node_idx (int): The flattened index of the pursuer's starting node.
+        evader_direction_vector (np.ndarray): The vector representing the evader's motion.
+        centroids (np.ndarray): Centroid coordinates for the low-resolution grid.
+        low_res_map_shape (tuple[int, int]): The shape of the low-resolution map (e.g., (100, 100)).
+        similarity_threshold (float): The minimum cosine similarity required to keep a path.
+                                      A value of 0.0 filters out all "backward" paths.
+                                      A value of -1.0 keeps all paths.
+
+    Returns:
+        dict: A new dictionary containing only the paths that meet the directional criteria.
+    """
+    filtered_paths = {}
+    
+    # Get the coordinates of the pursuer's start node
+    start_r, start_c = np.unravel_index(start_node_idx, low_res_map_shape)
+    start_node_coords = centroids[start_r, start_c]
+
+    for node, path in candidate_paths.items():
+        # Get the coordinates of the path's end node
+        end_node_idx = path[-1]
+        end_r, end_c = np.unravel_index(end_node_idx, low_res_map_shape)
+        end_node_coords = centroids[end_r, end_c]
+
+        # Calculate the direction vector for this candidate path
+        path_vector = end_node_coords - start_node_coords
+        
+        # Compare the path vector with the evader's direction vector
+        similarity = calculate_cosine_similarity(path_vector, evader_direction_vector)
+        
+        if similarity >= similarity_threshold:
+            filtered_paths[node] = path
+            
+    return filtered_paths
+
+
+
+def get_paths_to_frontier(bfs_results: dict, max_depth: int) -> dict:
+    """
+    Filters the results of a BFS to return only the paths to the frontier nodes.
+
+    The "frontier" is defined as the set of all nodes that are at a distance
+    exactly equal to max_depth from the start node.
+
+    Args:
+        bfs_results (dict): The output dictionary from the bfs_explore_paths_to_depth_scipy function.
+                            It maps each reached node to its shortest path from the start.
+        max_depth (int): The maximum search depth that was used to generate the bfs_results.
+
+    Returns:
+        dict: A new dictionary containing only the nodes (and their paths) on the frontier.
+    """
+    frontier_paths = {}
+    for node, path in bfs_results.items():
+        # The distance is the number of edges, which is the path length minus 1.
+        distance = len(path) - 1
+        if distance == max_depth:
+            frontier_paths[node] = path
+            
+    return frontier_paths
+
+
+def bfs_explore_paths_to_depth(graph_csr, start_node: int, max_depth: int) -> dict:
+    """
+    Performs a Breadth-First Search (BFS) from a start node up to a specified maximum depth,
+    collecting all shortest paths. This is achieved using Dijkstra's algorithm on an unweighted
+    graph, which is equivalent to BFS.
+
+    Args:
+        graph_csr (csr_matrix): The graph's adjacency matrix in CSR format.
+        start_node (int): The index of the starting node (UAV's current location).
+        max_depth (int): The maximum depth (number of edges) to explore from the start node.
+
+    Returns:
+        dict: A dictionary where keys are node indices reached within max_depth,
+              and values are lists representing the shortest path from the start node
+              to that node.
+              Returns an empty dictionary if start_node is invalid.
+    """
+    if start_node >= graph_csr.shape[0] or start_node < 0:
+        print(f"Warning: Start node {start_node} is out of graph bounds.")
+        return {}
+
+    # Use shortest_path, which for an unweighted graph is equivalent to BFS.
+    # It conveniently returns both distances and the predecessor tree.
+    distances, predecessors = shortest_path(
+        csgraph=graph_csr,
+        indices=start_node,
+        directed=False,  # Assuming an undirected graph
+        return_predecessors=True
+    )
+
+    all_paths_to_depth = {}
+
+    # Iterate through all possible nodes in the graph
+    for node_idx in range(graph_csr.shape[0]):
+        # Check if the node was reached (distance is not infinity) and is within the max_depth
+        if not np.isinf(distances[node_idx]) and distances[node_idx] <= max_depth:
+            # Reconstruct path using the predecessor matrix
+            path = []
+            current = node_idx
+            # Follow predecessors back to the start node
+            # -9999 is the standard marker for a node with no predecessor
+            while current != start_node and current != -9999:
+                path.append(current)
+                current = predecessors[current]
+
+            if current == start_node:  # Ensure we successfully traced back to the start
+                path.append(start_node)
+                path.reverse()  # Reverse to get path from start_node to node_idx
+                all_paths_to_depth[node_idx] = path
+
+    return all_paths_to_depth
 
 
 
@@ -67,59 +333,6 @@ def interpolate_by_time(coarse_waypoints, dt, avg_velocity):
     return np.array(unique_fine_waypoints)
 
 
-def generate_bspline_trajectory(waypoints, num_points=200, spline_degree=3):
-    """
-    Generates a smooth trajectory using B-splines that passes through given waypoints.
-
-    Args:
-        waypoints (np.ndarray): A (num_waypoints, 2) array of [x, y] points.
-        num_points (int): The number of points to generate for the final trajectory.
-        spline_degree (int): The degree of the spline (cubic is a good default).
-
-    Returns:
-        A dictionary containing the state (x, y, theta) and control (v, omega)
-        trajectories.
-    """
-    # 1. --- Parameterize the Path ---
-    # We use cumulative distance along the path as the parameter 'u'.
-    # This helps create a more uniform interpolation.
-    distance = np.cumsum(np.sqrt(np.sum(np.diff(waypoints, axis=0)**2, axis=1)))
-    distance = np.insert(distance, 0, 0)
-    
-    # 2. --- Fit the B-spline ---
-    # splprep finds the knots and coefficients for a spline that approximates the path.
-    # 's' is a smoothing factor. s=0 means the spline must pass through all points.
-    tck, u = splprep([waypoints[:, 0], waypoints[:, 1]], u=distance, k=spline_degree, s=0)
-
-    # 3. --- Evaluate the Spline and its Derivatives ---
-    u_fine = np.linspace(0, distance[-1], num_points)
-    
-    # Evaluate spline for position (derivative=0)
-    x_fine, y_fine = splev(u_fine, tck, der=0)
-    
-    # Evaluate for velocity (derivative=1)
-    vx, vy = splev(u_fine, tck, der=1)
-    
-    # Evaluate for acceleration (derivative=2)
-    ax, ay = splev(u_fine, tck, der=2)
-
-    # 4. --- Calculate Kinematic States ---
-    theta = np.arctan2(vy, vx)
-    
-    # Linear velocity (speed). Note this is NOT constant.
-    # The speed is determined by the spline parameterization.
-    v = np.sqrt(vx**2 + vy**2)
-    
-    # Angular velocity (omega)
-    # The formula is: omega = (vx*ay - vy*ax) / (vx^2 + vy^2)
-    # Add a small epsilon to avoid division by zero if the robot stops.
-    omega = (vx * ay - vy * ax) / (vx**2 + vy**2 + 1e-6)
-    
-    return {
-        "x": x_fine, "y": y_fine, "theta": theta,
-        "v": v, "omega": omega,
-        "waypoints": waypoints
-    }
 
 
 def plot_bspline_results(results):
@@ -565,47 +778,143 @@ def visualize(ground_truth: np.ndarray, predicted_trajectories: np.ndarray,koz_l
     plt.show()
 
 if __name__ == '__main__':
-    waypoints = np.array([
-        [0, 0],
-        [5, 2],
-        [6, 8],
-        [2, 7],
-        [-2, 4],
-        [0, 0]
-    ])
+    def create_mock_graph_data(high_res_shape=(200, 200), low_res_dim=(20, 20)):
+        """Generates a mock road map and all necessary graph data structures."""
+        print("1. Creating mock data...")
+        # Create a simple high-res map with a cross shape
+        high_res_map = np.zeros(high_res_shape)
+        center_y, center_x = high_res_shape[0] // 2, high_res_shape[1] // 2
+        high_res_map[center_y-5:center_y+5, :] = 1  # Horizontal road
+        high_res_map[:, center_x-5:center_x+5] = 1  # Vertical road
 
-    # Generate and solve the trajectory
+        # Use existing functions to process it
+        low_res_map, centroids = discretize_obstacle_map(high_res_map, low_res_dim, obs_thresh=0.01)
+        graph_lil = create_grid_csgraph(low_res_map)
+        graph_csr = graph_lil.tocsr()
+        print(f"   Mock graph created with {graph_csr.nnz // 2} edges.")
+        return high_res_map, low_res_map, centroids, graph_csr
 
-    v = 10
+    def visualize_predictions(high_res_map, centroids, evader_location, evader_direction_vector, predicted_trajectories):
+        """Plots the map, evader, direction, and all predicted paths."""
+        print("4. Visualizing results...")
+        fig, ax = plt.subplots(figsize=(12, 12))
+
+        # Plot the underlying road map
+        ax.imshow(high_res_map, cmap='Greys', origin='lower', alpha=0.5)
+
+        # Plot the graph nodes (centroids)
+        # ax.plot(centroids[..., 1], centroids[..., 0], 'o', color='skyblue', markersize=3, alpha=0.7, label='Graph Nodes')
+
+        # Plot the evader's location
+        ax.plot(evader_location[1], evader_location[0], 'r*', markersize=20, label='Evader Location', zorder=10)
+        
+        # Plot the evader's direction vector
+        arrow_len = 20
+        ax.add_patch(Arrow(evader_location[1], evader_location[0], 
+                        evader_direction_vector[1] * arrow_len, evader_direction_vector[0] * arrow_len, 
+                        width=5, color='red', label='Evader Direction'))
+
+        # Plot each predicted trajectory with a unique color
+        if predicted_trajectories:
+            num_paths = len(predicted_trajectories)
+            colors = plt.cm.get_cmap('viridis', num_paths)
+            for i, traj in enumerate(predicted_trajectories):
+                label = 'Predicted Paths' if i == 0 else None
+                ax.plot(traj[:, 1], traj[:, 0], color=colors(i), linewidth=2.5, label=label)
+                ax.plot(traj[-1, 1], traj[-1, 0], 'o', color=colors(i), markersize=6) # Mark endpoint
+
+        ax.set_title("Evader Path Predictions", fontsize=16)
+        ax.set_xlabel("X Coordinate")
+        ax.set_ylabel("Y Coordinate")
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.set_aspect('equal', adjustable='box')
+        plt.show()
 
 
+
+    # --- 1. Data Loading and Graph Creation (Your Provided Code) ---
+    segmap_file = "city_1000_1000_seg_segids.npz"
+    # mission_description_file = "description.json" # Not needed for this test
+    # obstacle_map_file = "city_1000_1000.npz"     # Not needed for this test
+
+    print("Loading maps and mission data...")
+    roads, resolution = load_roads(segmap_file, visualize=False)
+    roads = np.rot90(roads.T)
+    dim = (100, 100)
     
-    # Plot the outcome
+    print("Skeletonizing road map and building graph...")
+    skeletonized_roads = skeletonize_roads(roads)
+    low_res_skeleton_map, skeleton_centroids = discretize_obstacle_map(
+        skeletonized_roads, dim, obs_thresh=0.01
+    )
+    graph_from_skeleton_lil = create_grid_csgraph(low_res_skeleton_map)
+    graph_from_skeleton_csr = graph_from_skeleton_lil.tocsr()
+    print(f"Graph created with {graph_from_skeleton_csr.nnz // 2} edges.")
 
+    # --- 2. Scenario Definition ---
+    print("\n2. Defining scenario...")
+    
+    # Intelligently find a valid start node near the center of the map
+    center_r, center_c = dim[0] // 2, dim[1] // 2
+    start_node_found = False
+    for r_offset in range(-10, 11):
+        for c_offset in range(-10, 11):
+            r, c = center_r + r_offset, center_c + c_offset
+            if 0 <= r < dim[0] and 0 <= c < dim[1] and low_res_skeleton_map[r, c] == 1:
+                # Use the centroid of this valid node as the evader's location
+                evader_location = skeleton_centroids[r, c]
+                start_node_found = True
+                break
+        if start_node_found:
+            break
+            
+    if not start_node_found:
+        print("ERROR: Could not find a valid starting node on a road near the map center.")
+        exit()
+
+    # Define a hypothetical direction for the evader (e.g., moving down and to the right)
+    evader_direction_vector = np.array([-1.0, 1.0])
+    evader_direction_vector /= np.linalg.norm(evader_direction_vector) # Normalize
+    
+    print(f"   Evader placed at map coordinate {evader_location.round(2)}")
+    print(f"   Evader direction vector: {evader_direction_vector.round(2)}")
+
+    # --- 3. Prediction Parameters ---
+    N = 50
+    dt = 0.1
+    max_depth = 12 # How many steps on the low-res graph to look ahead
+    avg_velocity = 30.0 # units/sec
+    similarity_threshold = 0.0 # Stricter: path must be reasonably aligned with evader
+
+    # --- 4. Run Prediction ---
+    print("\n3. Calling predict_evader_paths...")
     start = time.time()
-    fine_waypoints_by_time = interpolate_by_time(waypoints, dt=0.1, avg_velocity=v)
-    print("get traj time", time.time() - start)
+    predicted_trajectories = predict_evader_paths(
+        evader_location,
+        evader_direction_vector,
+        graph_from_skeleton_csr,
+        skeleton_centroids,
+        low_res_skeleton_map,
+        N,
+        dt,
+        max_depth,
+        avg_velocity,
+        similarity_threshold
+    )
 
+    print("end",time.time()-start)
 
-    fig, ax2 = plt.subplots()
-    ax2.plot(waypoints[:, 0], waypoints[:, 1], 'ro-', markersize=10, linewidth=2, label='Coarse Path')
-    ax2.plot(fine_waypoints_by_time[:, 0], fine_waypoints_by_time[:, 1], 'gx', markersize=5, label=f'Fine Points ({len(fine_waypoints_by_time)})')
-    ax2.set_title(f"Interpolation by Time (dt={0.1}s, v={v}m/s)")
-    ax2.set_xlabel("X Position (m)")
-    ax2.set_ylabel("Y Position (m)")
-    ax2.legend()
-    ax2.grid(True)
-    ax2.axis('equal')
-    
-    plt.suptitle("Waypoint Interpolation Methods")
-    plt.show()
-    
-    start = time.time()
-    results = generate_bspline_trajectory(waypoints)
-    print("get traj time", time.time() - start)
-    
-    # Plot the outcome
-    plot_bspline_results(results)
-
-
+    if not predicted_trajectories:
+        print("No valid forward paths were predicted. Try relaxing the similarity_threshold or increasing max_depth.")
+    else:
+        print(f"   Successfully generated {len(predicted_trajectories)} predicted trajectories.")
+        # --- 5. Visualize ---
+        visualize_predictions(
+            roads, # Use the original road map for background
+            skeleton_centroids,
+            evader_location,
+            evader_direction_vector,
+            predicted_trajectories
+        )
 

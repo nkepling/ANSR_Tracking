@@ -5,10 +5,137 @@ import matplotlib.patches as patches
 from functools import partial
 from matplotlib import transforms
 from matplotlib.path import Path
+from scipy.sparse import lil_matrix
+from scipy.sparse.csgraph import connected_components, shortest_path,yen,breadth_first_tree
+from skimage.morphology import skeletonize, thin
+from scipy.spatial import KDTree
+import cv2
+import networkx as nx
 
-def discretize_obstacle_map(obstacle_map: np.ndarray, dim: tuple[int, int], obs_thresh: float) -> np.ndarray:
+
+
+def build_kdtree(G):
+    nodes = list(G.nodes)
+    positions = np.array([G.nodes[n]['pos'] for n in nodes])
+    kdtree = KDTree(positions)
+    print("k-d tree built successfully.")
+    return kdtree, nodes
+
+def find_closest_node_kdtree(kdtree, node_list, uav_coords):
+    dist, idx = kdtree.query(uav_coords, k=1) # k=1 for the single nearest neighbor
+    return node_list[idx],dist
+
+def fill_road_gaps(road_map: np.ndarray, kernel_size: int = 5) -> np.ndarray:
     """
-    Downsamples a high-resolution obstacle map to a lower resolution.
+    Fills small holes and gaps in a binary road map using a morphological closing operation.
+
+    This is ideal for fixing spurious "0" pixels within a larger road segment,
+    improving the connectivity of the road network for graph creation.
+
+    Args:
+        road_map (np.ndarray): The binary road map (0s and 1s).
+        kernel_size (int): The size of the square kernel used for the closing operation.
+                           A larger kernel will fill larger holes. A good starting
+                           point is 5. Must be an odd number.
+
+    Returns:
+        np.ndarray: A new binary road map with the gaps filled.
+    """
+    if kernel_size % 2 == 0:
+        print(f"Warning: kernel_size should be odd. Incrementing to {kernel_size + 1}.")
+        kernel_size += 1
+
+    # Convert the input map from (0, 1) to (0, 255) and uint8 type for OpenCV
+    binary_image = (road_map * 255).astype(np.uint8)
+
+    # Define the structuring element (kernel) for the operation
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+
+    # Perform the morphological closing operation
+    closed_image = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
+
+    # Convert the processed image back to a binary map of (0, 1)
+    cleaned_road_map = (closed_image > 0).astype(int)
+
+    return cleaned_road_map
+
+def skeletonize_roads(road_binary_map: np.ndarray) -> np.ndarray:
+    """
+    Simplifies a binary road map by reducing road segments to a single-pixel
+    width using skeletonization (thinning). This preserves the connectivity
+    and overall shape of the road network.
+
+    Args:
+        road_binary_map (np.ndarray): A 2D binary NumPy array (0s and 1s)
+                                      where 1s represent road segments.
+
+    Returns:
+        np.ndarray: A new 2D binary NumPy array representing the skeletonized
+                    (thinned) road map.
+    """
+    # Ensure the input is boolean, which skeletonize prefers
+    # True for foreground (roads), False for background
+    binary_input = road_binary_map.astype(bool)
+    
+    # Perform skeletonization
+    # You can also explore `skimage.morphology.thin` for slightly different results
+    skeleton = skeletonize(binary_input)
+    
+    # Convert back to int (0s and 1s) if preferred
+    return skeleton.astype(int)
+
+
+def create_grid_csgraph(binary_array: np.ndarray) -> lil_matrix:
+    """
+    Creates a SciPy csgraph (sparse adjacency matrix) from a binary array
+    where '1's represent nodes and have edges to all direct neighbors
+    (horizontal, vertical, and diagonal).
+
+    Args:
+        binary_array (np.ndarray): A 2D binary NumPy array (0s and 1s).
+
+    Returns:
+        lil_matrix: A sparse adjacency matrix (LIL format) representing the graph.
+                    The value at (i, j) is 1 if there's an edge between node i and node j.
+    """
+    rows, cols = binary_array.shape
+    num_nodes = rows * cols
+    graph = lil_matrix((num_nodes, num_nodes), dtype=int)
+
+    # Iterate through each cell in the binary array
+    for r in range(rows):
+        for c in range(cols):
+            # If the current cell is a '1' (a node in our graph)
+            if binary_array[r, c] == 1:
+                current_node_idx = r * cols + c
+
+                # Define relative coordinates for all 8 direct neighbors (including diagonals)
+                # dr: delta row, dc: delta column
+                neighbors = [
+                    (-1, -1), (-1, 0), (-1, 1),  # Top row
+                    (0, -1),           (0, 1),   # Middle row (excluding self)
+                    (1, -1), (1, 0), (1, 1)    # Bottom row
+                ]
+
+                for dr, dc in neighbors:
+                    n_r, n_c = r + dr, c + dc
+
+                    # Check if the neighbor is within bounds
+                    if 0 <= n_r < rows and 0 <= n_c < cols:
+                        # If the neighbor is also a '1' (a valid node)
+                        if binary_array[n_r, n_c] == 1:
+                            neighbor_node_idx = n_r * cols + n_c
+                            # Add an edge between the current node and its neighbor
+                            # Since it's undirected, add edges in both directions
+                            graph[current_node_idx, neighbor_node_idx] = 1
+                            graph[neighbor_node_idx, current_node_idx] = 1
+    return graph
+
+
+def discretize_obstacle_map(obstacle_map: np.ndarray, dim: tuple[int, int], obs_thresh: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Downsamples a high-resolution obstacle map to a lower resolution and returns
+    the centroid coordinates for each cell in the new grid.
 
     A cell in the new grid is marked as an obstacle if the percentage of
     obstacle cells in its corresponding high-resolution region exceeds a
@@ -27,10 +154,16 @@ def discretize_obstacle_map(obstacle_map: np.ndarray, dim: tuple[int, int], obs_
                     by the new dimensions.
 
     Returns:
-        np.ndarray: The new, lower-resolution obstacle map.
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - low_res_map (np.ndarray): The new, lower-resolution obstacle map.
+            - centroids (np.ndarray): A 2D array of shape (new_rows, new_cols, 2),
+                                      where centroids[r, c] contains the (row, col)
+                                      centroid coordinates (in high-resolution pixel space)
+                                      for the cell at (r, c) in the low-resolution map.
     """
     orig_rows, orig_cols = obstacle_map.shape
     new_rows, new_cols = dim
+
     if orig_rows % new_rows != 0 or orig_cols % new_cols != 0:
         raise ValueError(
             f"Original map shape {obstacle_map.shape} must be divisible by the new dimensions {dim}."
@@ -38,11 +171,28 @@ def discretize_obstacle_map(obstacle_map: np.ndarray, dim: tuple[int, int], obs_
 
     block_rows = orig_rows // new_rows
     block_cols = orig_cols // new_cols
+
     reshaped_map = obstacle_map.reshape(new_rows, block_rows, new_cols, block_cols)
     transposed_map = reshaped_map.transpose(0, 2, 1, 3)
     block_means = transposed_map.mean(axis=(2, 3))
-    return np.where(block_means > obs_thresh, 1, 0)
 
+    low_res_map = np.where(block_means > obs_thresh, 1, 0)
+
+    # Calculate centroids for each new low-resolution cell
+    centroids = np.zeros((new_rows, new_cols, 2), dtype=float)
+    for r_low in range(new_rows):
+        for c_low in range(new_cols):
+            # Calculate the starting (top-left) pixel coordinates of the block
+            start_row = r_low * block_rows
+            start_col = c_low * block_cols
+
+            # Calculate the centroid by adding half the block dimensions to the start
+            centroid_row = start_row + (block_rows - 1) / 2.0
+            centroid_col = start_col + (block_cols - 1) / 2.0
+            
+            centroids[r_low, c_low] = [centroid_row, centroid_col]
+
+    return low_res_map, centroids
 
 def load_mission(mission_file):
     with open(mission_file, 'r') as file:
@@ -263,7 +413,7 @@ def plot_map(city_map,save_file=None):
     plt.show()
 
 
-def get_evader_path_from_file(file_name,obstacle_map,roads,resolution,center):
+def get_evader_path_from_file(file_name,obstacle_map,roads,resolution,center,visualize=False):
     """Plot evader path with roads
     """
 
@@ -289,21 +439,195 @@ def get_evader_path_from_file(file_name,obstacle_map,roads,resolution,center):
     start_pos = pixel_coords[0, :]
     end_pos = pixel_coords[-1, :]
 
-    print("Generating plot...")
-    fig, ax = plt.subplots(figsize=(12, 12))
-    ax.scatter(origin_pixel_rot[0], origin_pixel_rot[1], c='red', s=50, label='Origin (0,0)')
-    ax.imshow(obstacle_map, cmap="binary", origin='lower') 
-    ax.imshow(roads, cmap="grey", alpha=0.4)
-    ax.plot(rotated_pixels[:, 0], rotated_pixels[:, 1], 'red', lw=2, label="Evader's Path")
-    ax.scatter(rotated_pixels[0][0], rotated_pixels[0][1], c='lime', s=150, label='Start', zorder=5, marker='o', edgecolors='black')
-    ax.scatter(rotated_pixels[-1][0], rotated_pixels[-1][1], c='red', s=150, label='End', zorder=5, marker='X')
-    ax.set_title("Evader Path on City Map")
-    ax.set_xlabel("X Pixel Coordinate")
-    ax.set_ylabel("Y Pixel Coordinate")
-    ax.legend()
-    plt.show()
+    if visualize:
+
+        print("Generating plot...")
+        fig, ax = plt.subplots(figsize=(12, 12))
+        ax.scatter(origin_pixel_rot[0], origin_pixel_rot[1], c='red', s=50, label='Origin (0,0)')
+        ax.imshow(obstacle_map, cmap="binary", origin='lower') 
+        ax.imshow(roads, cmap="grey", alpha=0.4)
+        ax.plot(rotated_pixels[:, 0], rotated_pixels[:, 1], 'red', lw=2, label="Evader's Path")
+        ax.scatter(rotated_pixels[0][0], rotated_pixels[0][1], c='lime', s=150, label='Start', zorder=5, marker='o', edgecolors='black')
+        ax.scatter(rotated_pixels[-1][0], rotated_pixels[-1][1], c='red', s=150, label='End', zorder=5, marker='X')
+        ax.set_title("Evader Path on City Map")
+        ax.set_xlabel("X Pixel Coordinate")
+        ax.set_ylabel("Y Pixel Coordinate")
+        ax.legend()
+        plt.show()
 
     return rotated_pixels
+
+
+def visualize_graph_on_grid(
+    high_res_map: np.ndarray,
+    low_res_map: np.ndarray,
+    centroids: np.ndarray,
+    graph: lil_matrix,
+    paths_to_highlight: list = None, # List of paths (list of node indices) to draw
+    title: str = "Graph on High-Resolution Grid"
+):
+    """
+    Visualizes the graph nodes (centroids) and edges on the original
+    high-resolution grid, with an option to highlight specific paths.
+
+    Args:
+        high_res_map (np.ndarray): The original high-resolution 2D map.
+        low_res_map (np.ndarray): The low-resolution obstacle map.
+        centroids (np.ndarray): A 2D array of shape (new_rows, new_cols, 2)
+                                containing the (row, col) centroid coordinates
+                                for each cell in the low-resolution map.
+        graph (lil_matrix): The sparse adjacency matrix representing the graph
+                            of the low-resolution map.
+        paths_to_highlight (list, optional): A list where each element is a list
+                                             of node indices representing a path.
+                                             These paths will be drawn in different colors.
+                                             Defaults to None.
+        title (str, optional): Title for the plot. Defaults to "Graph on High-Resolution Grid".
+    """
+    fig, ax = plt.subplots(figsize=(10, 10))
+
+    ax.imshow(high_res_map, cmap='binary', origin='lower', alpha=0.6)
+    
+    rows, cols = high_res_map.shape
+    new_rows, new_cols = low_res_map.shape
+    
+    block_rows = rows // new_rows
+    block_cols = cols // new_cols
+
+    for i in range(1, new_rows):
+        ax.axhline(i * block_rows - 0.5, color='gray', linestyle='--', linewidth=0.5)
+    for j in range(1, new_cols):
+        ax.axvline(j * block_cols - 0.5, color='gray', linestyle='--', linewidth=0.5)
+
+    # Plot nodes (centroids of valid low-res cells)
+    node_x_coords = []
+    node_y_coords = []
+    
+    # Create a reverse mapping from low-res (r,c) to flattened index
+    low_res_idx_map = np.full(low_res_map.shape, -1, dtype=int)
+    current_node_idx = 0
+    for r_low in range(new_rows):
+        for c_low in range(new_cols):
+            if low_res_map[r_low, c_low] == 1:
+                node_y_coords.append(centroids[r_low, c_low, 0])
+                node_x_coords.append(centroids[r_low, c_low, 1])
+                low_res_idx_map[r_low, c_low] = current_node_idx
+                current_node_idx += 1
+
+    ax.plot(node_x_coords, node_y_coords, 'ro', markersize=4, label='Graph Nodes (Centroids)')
+
+    # Plot edges
+    graph_coo = graph.tocoo()
+    for i, j, _ in zip(graph_coo.row, graph_coo.col, graph_coo.data):
+        if i >= j: # Draw each edge once
+            continue
+            
+        r1_low, c1_low = np.unravel_index(i, low_res_map.shape)
+        r2_low, c2_low = np.unravel_index(j, low_res_map.shape)
+        
+        x1_centroid, y1_centroid = centroids[r1_low, c1_low, 1], centroids[r1_low, c1_low, 0]
+        x2_centroid, y2_centroid = centroids[r2_low, c2_low, 1], centroids[r2_low, c2_low, 0]
+        
+        ax.plot([x1_centroid, x2_centroid], [y1_centroid, y2_centroid], 'b-', linewidth=1, alpha=0.7)
+
+    # Highlight K shortest paths
+    if paths_to_highlight:
+        colors = plt.cm.get_cmap('viridis', len(paths_to_highlight)) # Get a colormap for paths
+        for k_idx, path_nodes in enumerate(paths_to_highlight):
+            path_x = []
+            path_y = []
+            for node_idx in path_nodes:
+                # Need to convert flattened node_idx back to low-res (r,c)
+                r_low, c_low = np.unravel_index(node_idx, low_res_map.shape)
+                path_x.append(centroids[r_low, c_low, 1])
+                path_y.append(centroids[r_low, c_low, 0])
+            ax.plot(path_x, path_y, marker='o', linestyle='-', linewidth=2, color=colors(k_idx), 
+                    label=f'Path {k_idx+1} (Len: {len(path_nodes)-1})', markersize=7, alpha=0.9) # Length is number of edges
+
+    ax.set_title(title)
+    ax.set_xlabel("Original Grid Column (X)")
+    ax.set_ylabel("Original Grid Row (Y)")
+    ax.set_aspect('equal', adjustable='box')
+    ax.legend()
+    plt.grid(False)
+    plt.show()
+
+def visualize_bfs_on_skeleton(
+    high_res_map: np.ndarray,
+    low_res_map: np.ndarray,
+    centroids: np.ndarray,
+    start_node_idx: int,
+    bfs_paths: dict,
+    max_depth: int,
+    title: str = "BFS Exploration Results"
+):
+    """
+    Visualizes the results of a Breadth-First Search on the graph, with each
+    path to the frontier color-coded for clarity.
+
+    Args:
+        high_res_map (np.ndarray): The original high-resolution 2D map for context.
+        low_res_map (np.ndarray): The low-resolution map used to build the graph.
+        centroids (np.ndarray): Centroid coordinates for the low-resolution grid cells.
+        start_node_idx (int): The flattened index of the starting node for the BFS.
+        bfs_paths (dict): The output from the BFS function, mapping destination nodes to their paths.
+        max_depth (int): The maximum depth of the search, used for the title.
+        title (str, optional): The title for the plot.
+    """
+    fig, ax = plt.subplots(figsize=(12, 12))
+
+    # 1. Plot the high-resolution map as the background
+    ax.imshow(high_res_map, cmap='binary', origin='lower', alpha=0.7)
+
+    paths_to_visualize = list(bfs_paths.values())
+
+    # 2. Plot all the paths found by BFS with unique colors
+    if paths_to_visualize:
+        # --- NEW: Set up a colormap ---
+        # This creates a color generator that will give us a unique color for each path.
+        # 'nipy_spectral' and 'gist_rainbow' are good choices for many distinct colors.
+        num_paths = len(paths_to_visualize)
+        colors = plt.cm.get_cmap('nipy_spectral', num_paths)
+
+        # --- MODIFIED: Loop with enumerate to get an index for coloring ---
+        for i, path_nodes in enumerate(paths_to_visualize):
+            path_x = []
+            path_y = []
+            for node_idx in path_nodes:
+                r_low, c_low = np.unravel_index(node_idx, low_res_map.shape)
+                path_x.append(centroids[r_low, c_low, 1])
+                path_y.append(centroids[r_low, c_low, 0])
+            
+            # --- MODIFIED: Use the generated color for this specific path ---
+            ax.plot(path_x, path_y, color=colors(i), linewidth=2.5, alpha=0.9)
+
+    # 3. Highlight all the explored nodes on the frontier
+    frontier_nodes_indices = list(bfs_paths.keys())
+    if frontier_nodes_indices:
+        node_x_coords = []
+        node_y_coords = []
+        for node_idx in frontier_nodes_indices:
+            r_low, c_low = np.unravel_index(node_idx, low_res_map.shape)
+            node_x_coords.append(centroids[r_low, c_low, 1])
+            node_y_coords.append(centroids[r_low, c_low, 0])
+        ax.scatter(node_x_coords, node_y_coords, c='white', s=60, label='Frontier Nodes', zorder=5, edgecolors='black')
+
+    # 4. Clearly mark the start node
+    start_r, start_c = np.unravel_index(start_node_idx, low_res_map.shape)
+    start_x = centroids[start_r, start_c, 1]
+    start_y = centroids[start_r, start_c, 0]
+    ax.scatter(start_x, start_y, c='lime', s=250, marker='*', label='Start Node', zorder=10, edgecolors='black')
+
+    ax.set_title(f"{title} (from Node {start_node_idx} to Depth {max_depth})")
+    ax.set_xlabel("Grid Column (X)")
+    ax.set_ylabel("Grid Row (Y)")
+    ax.set_aspect('equal', adjustable='box')
+    ax.legend()
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.show()
+
+
+
 
 
     # segmentation colors for different categories
@@ -588,48 +912,125 @@ SEGID_COLORS = np.array([
 
 
 if __name__ == "__main__":
+    import time
+    from matplotlib.patches import Circle
+    from dummy_pwm import interpolate_by_time
+    
     segmap_file = "city_1000_1000_seg_segids.npz"
     mission_description_file = "description.json"
     obstacle_map_file = "city_1000_1000.npz"    
 
-
-    """Plot roads, obstacles, beleif region, 
-    """
-    # plot mission details on 1000x1000gridworld 
-    plot_belief_on_city_map(segmap_file, mission_description_file, obstacle_map_file, visualize=True)
-
-
-    #load binary numpy array where 1s are roads 
+    # --- 1. Data Loading and Preprocessing ---
+    print("Loading maps and mission data...")
     roads, resolution = load_roads(segmap_file, visualize=False)
     roads = np.rot90(roads.T)
-
-
-    #load binary numpy array where 1s are obstacles, depth is obstacle height
-    obstacle_map, resolution, (origin_y,origin_x) = load_obstacle_map(obstacle_map_file, depth=10)
-    obstacle_map = np.rot90(obstacle_map.T)
-
-    dim = (100,100)
-    obs_thresh = 0.5
-
-    #down sample binary numpy array to lower resolutoin grid world. dim is gridworld size
-    low_res_map = discretize_obstacle_map(obstacle_map,dim,obs_thresh)
-    plot_map(low_res_map)
-
-
-
-
+    dim = (1000, 1000)
     
- 
-
-
-
+    # --- 2. Graph Creation from Skeletonized Roads ---
+    print("Skeletonizing road map and building graph...")
+    filled_road = fill_road_gaps(roads, kernel_size=11)
+    skeletonized_roads = skeletonize_roads(filled_road)
     
+    skeletonized_roads = filled_road
+    # fig,ax = plt.subplots(figsize=(10,10))
+    # # ax.imshow(filled_road,cmap="binary")
+    # ax.imshow(skeletonized_roads,cmap="RdGy")
+
+    # plt.show()
+
+    # --- 1. Build the graph (same as before) ---
+    G = nx.Graph()
+    rows, cols = skeletonized_roads.shape
+    for r in range(rows):
+        for c in range(cols):
+            if skeletonized_roads[r, c] == 1:
+                current_node = (r, c)
+                G.add_node(current_node)
+
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        neighbor_r, neighbor_c = r + dr, c + dc
+                        if 0 <= neighbor_r < rows and 0 <= neighbor_c < cols and \
+                        skeletonized_roads[neighbor_r, neighbor_c] == 1:
+                            neighbor_node = (neighbor_r, neighbor_c)
+                            G.add_edge(current_node, neighbor_node)
+
+    print(f"Graph created with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
+
+    positions = {node: (node[1], node[0]) for node in G.nodes()}
+
+    nx.set_node_attributes(G, positions, name="pos")
+
+    print("\nSuccessfully added 'pos' attribute to all nodes.")
+
+    kdtree, nodes_list = build_kdtree(G)
+    uav_coords = (633, 291)
+    start_time = time.perf_counter()
+    center_node,dist = find_closest_node_kdtree(kdtree, nodes_list, uav_coords)
+    center_coords = G.nodes[center_node]['pos']
+    search_radius = 50.0 # e.g., 15 meters
+
+    indices_in_radius = kdtree.query_ball_point(center_coords, r=search_radius)
+    
+    nodes_in_radius = [nodes_list[i] for i in indices_in_radius]
+    subgraph = G.subgraph(nodes_in_radius)
+    all_paths_from_center = nx.single_source_shortest_path(subgraph,center_node)
+
+    paths_to_frontier = {}
+    for target_node, path in all_paths_from_center.items():
+        if len(path) - 1 == 50:
+            paths_to_frontier[target_node] = path
+    
+    trajectories = []
+    for i in paths_to_frontier.values():
+        new_path = interpolate_by_time(np.array(i),0.1,20)
+        traj = new_path[:20]
+        trajectories.append(traj)
+
+    print("Traj len",len(trajectories))
+    lookup_time_ms = (time.perf_counter() - start_time) * 1000
+
+    # TODO: Filter based on UAV position vector
+    # TODO: Filter start path to start at uav location 
+    # TODO: add smoothing using spines
+    
+    print(f"Closest graph node found and subgraph grabbed : {center_node} in {lookup_time_ms:.3f} ms.")
+    # print(f"Original graph has {G.number_of_nodes()} nodes.")
+    # # print(f"Subgraph within {search_radius} units of node {center_node} has {subgraph_by_distance.number_of_nodes()} nodes.")
+
+    # print(center_node)
+    # print(dist)
 
 
+    # fig,ax = plt.subplots()
+    # ax.imshow(roads,cmap="binary")
 
 
+    # print("\n--- Subgraph by Physical Distance ---")
+  
+    # # 6. Visualize
+    # pos = nx.get_node_attributes(G, 'pos')
+    # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+
+    # # Plot full graph
+    # ax1.set_title("Full Graph")
+    # nx.draw(G, pos, ax=ax1, node_size=30, node_color='lightgray')
+    # nx.draw_networkx_nodes(G, pos, nodelist=[center_node], ax=ax1, node_size=100, node_color='red')
+
+    # # Plot subgraph
+    # ax2.set_title(f"Subgraph (Radius = {search_radius} units)")
+    # nx.draw(G, pos, ax=ax2, node_size=30, node_color='lightgray')
+    # nx.draw(subgraph_by_distance, pos, ax=ax2, node_size=50, node_color='skyblue')
+    # nx.draw_networkx_nodes(G, pos, nodelist=[center_node], ax=ax2, node_size=100, node_color='red')
+    # # Add a circle to show the search radius
+    # circle = Circle(center_coords, search_radius, color='red', fill=False, linestyle='--', linewidth=2)
+    # ax2.add_patch(circle)
+    # ax2.set_aspect('equal')
 
 
         
-
-    
+    # ax.plot(uav_coords[0],uav_coords[1],"o",color="red")
+    # ax.plot(center_node[1],center_node[0],"x",color="green")
+    # plt.show()
