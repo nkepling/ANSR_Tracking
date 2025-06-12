@@ -908,6 +908,39 @@ SEGID_COLORS = np.array([
     [43, 47, 206],
 ], dtype=np.uint8)
 
+def get_kdtree(roads):
+    filled_road = fill_road_gaps(roads, kernel_size=11)
+    skeletonized_roads = skeletonize_roads(filled_road)
+
+
+    G = nx.Graph()
+    rows, cols = skeletonized_roads.shape
+    for r in range(rows):
+        for c in range(cols):
+            if skeletonized_roads[r, c] == 1:
+                current_node = (r, c)
+                G.add_node(current_node)
+
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        neighbor_r, neighbor_c = r + dr, c + dc
+                        if 0 <= neighbor_r < rows and 0 <= neighbor_c < cols and \
+                        skeletonized_roads[neighbor_r, neighbor_c] == 1:
+                            neighbor_node = (neighbor_r, neighbor_c)
+                            G.add_edge(current_node, neighbor_node)
+
+
+
+    positions = {node: (node[1], node[0]) for node in G.nodes()}
+
+    nx.set_node_attributes(G, positions, name="pos")
+
+    kdtree, nodes_list = build_kdtree(G)
+
+    return G,kdtree,nodes_list
+
 
 
 
@@ -931,7 +964,7 @@ if __name__ == "__main__":
     filled_road = fill_road_gaps(roads, kernel_size=11)
     skeletonized_roads = skeletonize_roads(filled_road)
     
-    skeletonized_roads = filled_road
+    skeletonized_roads = skeletonized_roads
     # fig,ax = plt.subplots(figsize=(10,10))
     # # ax.imshow(filled_road,cmap="binary")
     # ax.imshow(skeletonized_roads,cmap="RdGy")
@@ -977,19 +1010,20 @@ if __name__ == "__main__":
     nodes_in_radius = [nodes_list[i] for i in indices_in_radius]
     subgraph = G.subgraph(nodes_in_radius)
     all_paths_from_center = nx.single_source_shortest_path(subgraph,center_node)
-
+    print(len(all_paths_from_center))
     paths_to_frontier = {}
     for target_node, path in all_paths_from_center.items():
-        if len(path) - 1 == 50:
+        if len(path) - 1 >= 200:
             paths_to_frontier[target_node] = path
     
-    trajectories = []
-    for i in paths_to_frontier.values():
-        new_path = interpolate_by_time(np.array(i),0.1,20)
-        traj = new_path[:20]
-        trajectories.append(traj)
+    print(len(paths_to_frontier))
+    # trajectories = []
+    # for i in paths_to_frontier.values():
+    #     new_path = interpolate_by_time(np.array(i),0.1,20)
+    #     traj = new_path[:20]
+    #     trajectories.append(traj)
 
-    print("Traj len",len(trajectories))
+    
     lookup_time_ms = (time.perf_counter() - start_time) * 1000
 
     # TODO: Filter based on UAV position vector

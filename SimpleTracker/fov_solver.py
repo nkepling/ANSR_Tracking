@@ -4,7 +4,7 @@ import time
 import cv2
 
 
-def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, get_ellipse=True):
+def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, epsilon_scale=0.02):
 
     map_height, map_width = obstacle_map.shape
     center_x, center_y = int(uav_state[0]), int(uav_state[1])
@@ -19,6 +19,7 @@ def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, g
     closed_image = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
 
     padded_image = cv2.copyMakeBorder(closed_image, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+   
     contours, _ = cv2.findContours(padded_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     transformed_coords = []
@@ -29,8 +30,19 @@ def grab_obstacles(uav_state, obstacle_map, avoidance_region, visualize=False, g
             continue
         c = c.squeeze(1)
 
-        hull = cv2.convexHull(c).squeeze(1)
-        c_global = hull + offset
+        hull = cv2.convexHull(c)
+
+        perimeter = cv2.arcLength(hull, True)
+        epsilon = perimeter * epsilon_scale
+        
+        simplified_hull = cv2.approxPolyDP(hull, epsilon, True)
+
+        # Ensure we still have a valid polygon
+        if simplified_hull.shape[0] < 3:
+            simplified_hull = hull # Fallback to the original hull if over-simplified
+
+        # 6. Convert coordinates back to the global frame and store
+        c_global = simplified_hull.squeeze(1) + offset
         transformed_coords.append(c_global)
 
     return transformed_coords
@@ -112,12 +124,13 @@ def solve_uav_tracking_with_fov(
     fov_weight,
     standoff_distance,
     solver_opts,
-    initial_state_guess=None, # <-- NEW: Initial guess for state trajectory
-    initial_control_guess=None, # <-- NEW: Initial guess for control trajectory
+    initial_state_guess=None, 
+    initial_control_guess=None, 
     N=20,
     dt=0.1,
     saftey_radius=2,
-    slack_weight=1e6 
+    slack_weight=1e6,
+    control_effort_weight=0.1 
 ):
     """
     Solves the UAV tracking problem, accepting an initial guess to warm-start the solver.
@@ -145,6 +158,9 @@ def solve_uav_tracking_with_fov(
  # --- MODIFICATION START: Probabilistic Tracking Objective ---
     total_tracking_objective = 0
     total_fov_penalty = 0
+
+    total_tail_chase_penalty = 0
+    allignment_penalty = 0
     polygon_slack_penalty = 0
     standoff_dist_sq = standoff_distance**2
     epsilon = 1e-5
@@ -169,6 +185,7 @@ def solve_uav_tracking_with_fov(
 
         tracking_penalty_k = 0
         fov_penalty_k = 0
+
         
         for j, p_j in enumerate(probabilities):
             # Get the j-th reference trajectory
@@ -180,22 +197,51 @@ def solve_uav_tracking_with_fov(
             dist_sq = ca.sumsqr(pos[:, k] - evader_pos) + epsilon
 
             tracking_penalty_k += p_j * (dist_sq - standoff_dist_sq)**2
+
+
+            #   Approximate evader velocity
+            if k < ref_traj_j.shape[1] - 1:
+                evader_vel = (ref_traj_j[:, ref_index + 1] - evader_pos) / dt
+            else: # At the end of the trajectory, assume zero velocity
+                evader_vel = np.array([0, 0])
+
+
+            vec_from_evader = pos[:, k] - evader_pos
+            dot_product = ca.dot(vec_from_evader, evader_vel)
+            fov_penalty_k += p_j * ca.fmax(0, dot_product)
+
+
+             # Define the two vectors to be aligned
+            vec_uav_to_evader = evader_pos - pos[:, k]
+            
+            # Normalize the vectors for cosine similarity calculation
+            norm_uav_to_evader = ca.norm_2(vec_uav_to_evader) + epsilon
+            norm_evader_vel = ca.norm_2(evader_vel) + epsilon
+
+            # Calculate cosine similarity
+            dot_product = ca.dot(vec_uav_to_evader, evader_vel)
+            cosine_similarity = dot_product / (norm_uav_to_evader * norm_evader_vel)
+            
+            # The penalty is 0 for perfect alignment and 2 for perfect anti-alignment
+            fov_penalty_k += p_j * (1 - cosine_similarity)
             
             # --- FOV Calculation ---
-            vec_world = evader_pos - pos[:, k]
-            cos_th = ca.cos(theta[k])
-            sin_th = ca.sin(theta[k])
-            x_local = vec_world[0] * cos_th + vec_world[1] * sin_th
-            y_local = -vec_world[0] * sin_th + vec_world[1] * cos_th
-            violation = ((x_local - a) / a)**2 + (y_local / b)**2 - 1
-            fov_penalty_k += p_j * ca.fmax(0, violation)
+            # vec_world = evader_pos - pos[:, k]
+            # cos_th = ca.cos(theta[k])
+            # sin_th = ca.sin(theta[k])
+            # x_local = vec_world[0] * cos_th + vec_world[1] * sin_th
+            # y_local = -vec_world[0] * sin_th + vec_world[1] * cos_th
+            # violation = ((x_local - a) / a)**2 + (y_local / b)**2 - 1
+            # fov_penalty_k += p_j * ca.fmax(0, violation)
 
         # Add the accumulated penalties for this time step to the totals
         total_tracking_objective += tracking_penalty_k
         total_fov_penalty += fov_penalty_k
+        # total_fov_penalty += behind_penalty_k
 
+    total_control_effort_penalty = ca.sumsqr(control)
 
-    objective = tracking_weight * total_tracking_objective +  fov_weight * total_fov_penalty + slack_weight * polygon_slack_penalty
+    objective = tracking_weight * total_tracking_objective +  fov_weight * total_fov_penalty + slack_weight * polygon_slack_penalty + control_effort_weight * total_control_effort_penalty
     opti.minimize(objective)
 
     # --- MODIFICATION START: Provide Initial Guess to Solver ---
@@ -204,25 +250,21 @@ def solve_uav_tracking_with_fov(
     if initial_control_guess is not None:
         opti.set_initial(control, initial_control_guess)
 
-    p_opts = {"expand": True, "print_time": True}
+    p_opts = {"expand": True, "print_time": False}
     
     # Solver options: suppress IPOPT startup banner and iteration info
-    s_opts = {"ipopt": {"print_level": 0, "sb": "yes"}}
+    # s_opts = {"ipopt": {"print_level": 0, "sb": "yes"}}
     s_opts = solver_opts
     opti.solver('ipopt', p_opts, s_opts)
 
     end = time.perf_counter()
     construction_time = end -start
-
-    print(f"Total Construction time:  {(end-start)*1000:.3f} ms")
-
-
     
     try:
         sol = opti.solve()
         return sol.value(control), sol.value(state),construction_time,True
     except RuntimeError:
-        print("Solver failed at this step! Returning zero control.")
+        # print("Solver failed at this step! Returning zero control.")
         if initial_state_guess is None:
             fallback_state = np.tile(initial_state.reshape(3, 1), (1, N + 1))
             fallback_control = np.zeros((2, N))
