@@ -225,7 +225,7 @@ def solve_uav_tracking_with_fov(
             # The penalty is 0 for perfect alignment and 2 for perfect anti-alignment
             fov_penalty_k += p_j * (1 - cosine_similarity)
             
-            # --- FOV Calculation ---
+            #--- FOV Calculation ---
             # vec_world = evader_pos - pos[:, k]
             # cos_th = ca.cos(theta[k])
             # sin_th = ca.sin(theta[k])

@@ -371,8 +371,8 @@ class Evader:
         # --- State Attributes ---
         self.x = x
         self.y = y
-        self.theta = theta
-        self.v = v
+        self.theta = theta # Heading in radians
+        self.v = v         # Velocity in m/s
         
         # --- Path-Following Attributes ---
         self.path = path
@@ -384,13 +384,16 @@ class Evader:
 
     def _preprocess_path(self):
         """Pre-calculates lengths for efficient path tracking."""
+        if isinstance(self.path, list):
+            self.path = np.array(self.path)
+
         if not isinstance(self.path, np.ndarray) or self.path.ndim != 2 or self.path.shape[1] != 2:
-            raise ValueError("Path must be a NumPy array of shape (N, 2)")
+            raise ValueError("Path must be a NumPy array or list of shape (N, 2)")
         
         segment_vectors = np.diff(self.path, axis=0)
         self.segment_lengths = np.linalg.norm(segment_vectors, axis=1)
         self.cumulative_lengths = np.insert(np.cumsum(self.segment_lengths), 0, 0)
-        self.total_path_length = self.cumulative_lengths[-1]
+        self.total_path_length = self.cumulative_lengths[-1] if len(self.cumulative_lengths) > 0 else 0.0
 
     @property
     def vec(self) -> np.ndarray:
@@ -399,6 +402,49 @@ class Evader:
     @property
     def pos(self) -> np.ndarray:
         return np.array([self.x, self.y])
+
+
+    def get_noisy_position(self, scale: float = 1.0) -> np.ndarray:
+        """
+        Returns the evader's position with added Gaussian noise.
+
+        Args:
+            scale (float): The standard deviation of the noise for each axis (in meters).
+
+        Returns:
+            np.ndarray: A new (2,) array with the noisy [x, y] position.
+        """
+        noise = np.random.normal(loc=0.0, scale=scale, size=2)
+        return self.pos + noise
+
+    def get_noisy_heading(self, scale: float = np.deg2rad(2.0)) -> float:
+        """
+        Returns the evader's heading with added Gaussian noise.
+
+        Args:
+            scale (float): The standard deviation of the noise (in radians).
+
+        Returns:
+            float: The new noisy heading in radians.
+        """
+        noise = np.random.normal(loc=0.0, scale=scale)
+        return self.theta + noise
+
+    def get_noisy_velocity(self, scale: float = 0.5) -> float:
+        """
+        Returns the evader's velocity with added Gaussian noise.
+        Ensures the velocity does not become negative.
+
+        Args:
+            scale (float): The standard deviation of the noise (in m/s).
+
+        Returns:
+            float: The new non-negative noisy velocity.
+        """
+        noise = np.random.normal(loc=0.0, scale=scale)
+        return max(0, self.v + noise)
+
+    # --- EXISTING METHODS ---
 
     def update(self, dt: float):
         if self.path is None or self.finished:
@@ -419,14 +465,13 @@ class Evader:
         self.y += self.v * math.sin(self.theta) * dt
 
     def _get_lookahead_point(self) -> np.ndarray:
-        # ### FIX STARTS HERE ###
-        # This whole block is rewritten to be correct and more robust.
-        
+        if self.path is None or self.total_path_length == 0:
+            return None
+            
         min_dist_to_path = float('inf')
         closest_point_on_path = None
         closest_segment_index = 0
 
-        # 1. Find the point on the path polyline closest to the evader
         for i in range(len(self.path) - 1):
             p1 = self.path[i]
             p2 = self.path[i+1]
@@ -436,7 +481,7 @@ class Evader:
             line_len_sq = np.dot(line_vec, line_vec)
             
             t = 0.0
-            if line_len_sq > 0:
+            if line_len_sq > 1e-9:
                 t = max(0, min(1, np.dot(point_vec, line_vec) / line_len_sq))
                 
             closest_point_on_segment = p1 + t * line_vec
@@ -447,24 +492,19 @@ class Evader:
                 closest_point_on_path = closest_point_on_segment
                 closest_segment_index = i
 
-        # 2. Calculate how far along the path this closest point is
         dist_to_closest_point = self.cumulative_lengths[closest_segment_index] + \
                                 np.linalg.norm(closest_point_on_path - self.path[closest_segment_index])
 
-        # 3. Find the target distance by adding the lookahead distance
         target_dist = dist_to_closest_point + self.lookahead_distance
         
         if target_dist >= self.total_path_length:
-            return None
+            self.finished = True
+            return self.path[-1]
 
-        # 4. Find which segment the look-ahead point is on
         target_segment_index = np.searchsorted(self.cumulative_lengths, target_dist, side='right') - 1
-        
-        # 5. Interpolate to find the exact look-ahead point
         dist_into_segment = target_dist - self.cumulative_lengths[target_segment_index]
         start_point = self.path[target_segment_index]
         
-        # Handle cases where segment length might be zero
         segment_len = self.segment_lengths[target_segment_index]
         if segment_len <= 1e-6:
              return start_point
@@ -472,36 +512,21 @@ class Evader:
         end_point = self.path[target_segment_index + 1]
         proportion = dist_into_segment / segment_len
         lookahead_point = start_point + proportion * (end_point - start_point)
-        # ### FIX ENDS HERE ###
         
         return lookahead_point
     
     def get_predicted_trajectory(self, N, dt):
-        """
-        Predicts the evader's future path by simulating its movement.
-        """
         preds = np.zeros((2, N))
-
         temp_evader = Evader(
-            x=self.x, 
-            y=self.y, 
-            theta=self.theta, 
-            v=self.v, 
-            path=self.path, 
-            lookahead_distance=self.lookahead_distance
+            x=self.x, y=self.y, theta=self.theta, v=self.v, 
+            path=self.path, lookahead_distance=self.lookahead_distance
         )
         
-        if temp_evader.path is None:
-            for i in range(N):
-                temp_evader.update(dt)
-                preds[:, i] = temp_evader.pos
-            return preds
-
         for i in range(N):
             temp_evader.update(dt)
             preds[:, i] = temp_evader.pos
-
         return preds
+
         
 def forward(current_state: Evader, delta_t: float) -> Evader:
     """

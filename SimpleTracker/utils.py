@@ -1056,40 +1056,40 @@ if __name__ == "__main__":
     # TODO: add smoothing using spines
     
     print(f"Closest graph node found and subgraph grabbed : {center_node} in {lookup_time_ms:.3f} ms.")
-    # print(f"Original graph has {G.number_of_nodes()} nodes.")
-    # # print(f"Subgraph within {search_radius} units of node {center_node} has {subgraph_by_distance.number_of_nodes()} nodes.")
+    print(f"Original graph has {G.number_of_nodes()} nodes.")
+    # print(f"Subgraph within {search_radius} units of node {center_node} has {subgraph_by_distance.number_of_nodes()} nodes.")
 
-    # print(center_node)
-    # print(dist)
-
-
-    # fig,ax = plt.subplots()
-    # ax.imshow(roads,cmap="binary")
+    print(center_node)
+    print(dist)
 
 
-    # print("\n--- Subgraph by Physical Distance ---")
+    fig,ax = plt.subplots()
+    ax.imshow(roads,cmap="binary")
+
+
+    print("\n--- Subgraph by Physical Distance ---")
   
-    # # 6. Visualize
-    # pos = nx.get_node_attributes(G, 'pos')
-    # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+    # 6. Visualize
+    pos = nx.get_node_attributes(G, 'pos')
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
 
-    # # Plot full graph
-    # ax1.set_title("Full Graph")
-    # nx.draw(G, pos, ax=ax1, node_size=30, node_color='lightgray')
-    # nx.draw_networkx_nodes(G, pos, nodelist=[center_node], ax=ax1, node_size=100, node_color='red')
+    # Plot full graph
+    ax1.set_title("Full Graph")
+    nx.draw(G, pos, ax=ax1, node_size=30, node_color='lightgray')
+    nx.draw_networkx_nodes(G, pos, nodelist=[center_node], ax=ax1, node_size=100, node_color='red')
 
-    # # Plot subgraph
-    # ax2.set_title(f"Subgraph (Radius = {search_radius} units)")
-    # nx.draw(G, pos, ax=ax2, node_size=30, node_color='lightgray')
-    # nx.draw(subgraph_by_distance, pos, ax=ax2, node_size=50, node_color='skyblue')
-    # nx.draw_networkx_nodes(G, pos, nodelist=[center_node], ax=ax2, node_size=100, node_color='red')
-    # # Add a circle to show the search radius
-    # circle = Circle(center_coords, search_radius, color='red', fill=False, linestyle='--', linewidth=2)
-    # ax2.add_patch(circle)
-    # ax2.set_aspect('equal')
+    # Plot subgraph
+    ax2.set_title(f"Subgraph (Radius = {search_radius} units)")
+    nx.draw(G, pos, ax=ax2, node_size=30, node_color='lightgray')
+    nx.draw(subgraph_by_distance, pos, ax=ax2, node_size=50, node_color='skyblue')
+    nx.draw_networkx_nodes(G, pos, nodelist=[center_node], ax=ax2, node_size=100, node_color='red')
+    # Add a circle to show the search radius
+    circle = Circle(center_coords, search_radius, color='red', fill=False, linestyle='--', linewidth=2)
+    ax2.add_patch(circle)
+    ax2.set_aspect('equal')
 
 
         
-    # ax.plot(uav_coords[0],uav_coords[1],"o",color="red")
-    # ax.plot(center_node[1],center_node[0],"x",color="green")
-    # plt.show()
+    ax.plot(uav_coords[0],uav_coords[1],"o",color="red")
+    ax.plot(center_node[1],center_node[0],"x",color="green")
+    plt.show()

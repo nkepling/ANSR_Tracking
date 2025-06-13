@@ -69,7 +69,9 @@ def get_longterm_predictions(
     if available.
     """
     # 1. Find the evader's current node and all paths in a local subgraph
-    center_node, dist = find_closest_node_kdtree(kdtree, nodes_list, evader.pos)
+
+    evader_pos = evader.get_noisy_position()
+    center_node, dist = find_closest_node_kdtree(kdtree, nodes_list, evader_pos)
     center_coords = G.nodes[center_node]['pos']
 
     indices_in_radius = kdtree.query_ball_point(center_coords, r=search_radius)
@@ -87,7 +89,8 @@ def get_longterm_predictions(
     # --- NEW LOGIC: Prioritize forward paths, but keep backward paths as a fallback ---
 
     # 2. Separate paths into forward and backward groups
-    evader_heading_vec = np.array([np.cos(evader.theta), np.sin(evader.theta)])
+    evader_theta = evader.get_noisy_heading()
+    evader_heading_vec = np.array([np.cos(evader_theta), np.sin(evader_theta)])
     start_node_pos = np.array(G.nodes[center_node]['pos'])
     
     forward_paths = {}
@@ -128,6 +131,8 @@ def get_longterm_predictions(
     
     # --- The rest of the function proceeds as before ---
 
+    evader_v = evader.get_noisy_velocity()
+
     # 6. For each goal, generate a trajectory using RRT
     predictions = []
     for goal_node in final_goal_nodes:
@@ -149,9 +154,9 @@ def get_longterm_predictions(
 
         # d. Create a temporary evader to generate the final trajectory
         temp_evader = Evader(
-            x=evader.pos[0], y=evader.pos[1],
-            theta=evader.theta,
-            v=evader.v, path=smoothed_path, lookahead_distance=5.0
+            x=evader_pos[0], y=evader_pos[1],
+            theta=evader_theta,
+            v=evader_v, path=smoothed_path, lookahead_distance=5.0
         )
         prediction = temp_evader.get_predicted_trajectory(N, dt)
         predictions.append(prediction)
@@ -171,20 +176,23 @@ def generate_fallback_prediction(evader, N, dt, k, v_noise_scale=1.0, theta_nois
     """
     Generates a simple "continue straight" trajectory as a fallback.
     """
+    evader_pos = evader.get_noisy_position()
     fallback_path = np.zeros((2, N + 1))
-    fallback_path[:, 0] = evader.pos
+    fallback_path[:, 0] = evader_pos
+    evader_theta = evader.get_noisy_heading()
     # noisy_v = evader.v + np.random.normal(loc=0.0, scale=v_noise_scale)
     # noisy_v = max(0, noisy_v)
     # Create the path by repeatedly taking a step in the current direction
-    step_vec = evader.v * dt * np.array([np.cos(evader.theta), np.sin(evader.theta)])
+    step_vec = evader.v * dt * np.array([np.cos(evader_theta), np.sin(evader_theta)])
     
     for i in range(N):
         fallback_path[:, i+1] = fallback_path[:, i] + step_vec
-        
+    
+    evader_v = evader.get_noisy_velocity()
     # Create a temporary evader to follow this simple path
     temp_evader = Evader(
-        x=evader.pos[0], y=evader.pos[1],
-        theta=evader.theta, v=evader.v,
+        x=evader_pos[0], y=evader_pos[1],
+        theta=evader_theta, v=evader_v,
         path=fallback_path.T, # Evader class may expect a list of points
         lookahead_distance=5.0
     )
@@ -457,6 +465,9 @@ if __name__ == "__main__":
     obstacle_map = np.rot90(obstacle_map.T)
 
     G,kdtree,nodes_list = get_kdtree(roads)
+
+    print(len(nodes_list))
+
     files = find_target_csv_files()
 
     print("Num files: ",len(files))
@@ -475,7 +486,7 @@ if __name__ == "__main__":
         # ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-028-000/trajectories/target-pzFVxwf.csv" # good check for non-convex polygon
         # ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-021-000/trajectories/target-giQdQiL.csv" # this one is hard
         # ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-012-000/trajectories/target-pnsVQaV.csv"
-        # ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-001-000/trajectories/target-THrHZpn.csv"
+        ground_truth_file_name = "2025-05-14-sprint1-scenarios-v1/scenario-001-000/trajectories/target-THrHZpn.csv"
         # Load map and road data
     
        
@@ -570,7 +581,7 @@ if __name__ == "__main__":
             
             evader_prediction = evader.get_predicted_trajectory(N_TRAJ, DT)
 
-            num_alternatives = 5
+            num_alternatives = 3
             noise_scale = 2.0  # Adjust this for more/less deviation
 
             # alternative_evader_trajectories = generate_waypoint_deviations(evader_prediction,num_alternatives,noise_scale=noise_scale,num_waypoints=len(evader_prediction))
@@ -586,9 +597,9 @@ if __name__ == "__main__":
             evader_probabilities = np.ones(len(alternative_evader_trajectories))
             end_prediction_time = time.perf_counter()
 
-            # assuming ground truth evader state estimation at time t
-            theta_radians = evader.theta 
-            evader_direction_vector = np.array([np.cos(theta_radians), np.sin(theta_radians)])
+            # # assuming ground truth evader state estimation at time t
+            # theta_radians = evader.get_noisy_heading()
+            # evdaer_direction_vector = np.array([np.cos(theta_radians), np.sin(theta_radians)])
                 
             polygonal_obstacles = grab_obstacles(uav_state,obstacle_map,avoidance_region)
 
@@ -619,132 +630,132 @@ if __name__ == "__main__":
 
 
     
-        #     ax.clear()
+            ax.clear()
             
-        #     uav_current_pos = uav_state[:2]
-        #     uav_current_theta = uav_state[2]
-        #     half_view = VIEW_RANGE / 2.0
+            uav_current_pos = uav_state[:2]
+            uav_current_theta = uav_state[2]
+            half_view = VIEW_RANGE / 2.0
 
-        #     win_x_min = uav_current_pos[0] - half_view
-        #     win_y_min = uav_current_pos[1] - half_view
-        #     slice_x_start = np.clip(int(win_x_min), 0, map_width)
-        #     slice_x_end = np.clip(int(win_x_max := win_x_min + VIEW_RANGE), 0, map_width)
-        #     slice_y_start = np.clip(int(win_y_min), 0, map_height)
-        #     slice_y_end = np.clip(int(win_y_max := win_y_min + VIEW_RANGE), 0, map_height)
+            win_x_min = uav_current_pos[0] - half_view
+            win_y_min = uav_current_pos[1] - half_view
+            slice_x_start = np.clip(int(win_x_min), 0, map_width)
+            slice_x_end = np.clip(int(win_x_max := win_x_min + VIEW_RANGE), 0, map_width)
+            slice_y_start = np.clip(int(win_y_min), 0, map_height)
+            slice_y_end = np.clip(int(win_y_max := win_y_min + VIEW_RANGE), 0, map_height)
 
 
-        #     map_slice = obstacle_map[slice_y_start:slice_y_end, slice_x_start:slice_x_end]
+            map_slice = obstacle_map[slice_y_start:slice_y_end, slice_x_start:slice_x_end]
 
-        #     uav_path_arr = np.array(uav_history)
-        #     evader_path_arr = np.array(evader_history)
+            uav_path_arr = np.array(uav_history)
+            evader_path_arr = np.array(evader_history)
             
-        #     local_uav_path = uav_path_arr[:, :2] - [slice_x_start, slice_y_start]
-        #     local_evader_path = evader_path_arr - [slice_x_start, slice_y_start]
-        #     local_uav_pos = uav_current_pos - [slice_x_start, slice_y_start]
-        #     local_evader_pos = evader.pos - [slice_x_start, slice_y_start]
+            local_uav_path = uav_path_arr[:, :2] - [slice_x_start, slice_y_start]
+            local_evader_path = evader_path_arr - [slice_x_start, slice_y_start]
+            local_uav_pos = uav_current_pos - [slice_x_start, slice_y_start]
+            local_evader_pos = evader.pos - [slice_x_start, slice_y_start]
 
-        #     ax.imshow(map_slice, cmap='binary', origin='lower', alpha=1.0,
-        #             extent=[0, slice_x_end - slice_x_start, 0, slice_y_end - slice_y_start])
+            ax.imshow(map_slice, cmap='binary', origin='lower', alpha=1.0,
+                    extent=[0, slice_x_end - slice_x_start, 0, slice_y_end - slice_y_start])
             
-        #     road_slice = roads[slice_y_start:slice_y_end, slice_x_start:slice_x_end]
-        #     ax.imshow(road_slice, cmap='bone', origin='lower', alpha=0.4,
-        #             extent=[0, slice_x_end - slice_x_start, 0, slice_y_end - slice_y_start])
+            road_slice = roads[slice_y_start:slice_y_end, slice_x_start:slice_x_end]
+            ax.imshow(road_slice, cmap='bone', origin='lower', alpha=0.4,
+                    extent=[0, slice_x_end - slice_x_start, 0, slice_y_end - slice_y_start])
 
 
-        #     local_planned_state = planned_state.copy()
-        #     local_planned_state[0, :] -= slice_x_start
-        #     local_planned_state[1, :] -= slice_y_start
-        #     ax.plot(local_planned_state[0, 1:], local_planned_state[1, 1:], 'g-+', alpha=0.6, label='UAV Plan')
+            local_planned_state = planned_state.copy()
+            local_planned_state[0, :] -= slice_x_start
+            local_planned_state[1, :] -= slice_y_start
+            ax.plot(local_planned_state[0, 1:], local_planned_state[1, 1:], 'g-+', alpha=0.9, label='UAV Plan')
 
-        #     local_evader_traj = evader_prediction.copy()
-        #     local_evader_traj[0,:] -= slice_x_start
-        #     local_evader_traj[1,:] -= slice_y_start
-        #     ax.plot(local_evader_traj[0, :], local_evader_traj[1, :], 'r-+', alpha=0.0, label='Evader Traj')
+            local_evader_traj = evader_prediction.copy()
+            local_evader_traj[0,:] -= slice_x_start
+            local_evader_traj[1,:] -= slice_y_start
+            ax.plot(local_evader_traj[0, :], local_evader_traj[1, :], 'r-+', alpha=0.9, label='Evader Traj')
 
-        #     for alt_traj in alternative_evader_trajectories:
-        #         local_alt_traj = alt_traj.copy()
-        #         local_alt_traj[0, :] -= slice_x_start
-        #         local_alt_traj[1, :] -= slice_y_start
-        #         ax.plot(local_alt_traj[0, :], local_alt_traj[1, :], '--', alpha=1.0, label='Alt Evader Traj')
+            for alt_traj in alternative_evader_trajectories:
+                local_alt_traj = alt_traj.copy()
+                local_alt_traj[0, :] -= slice_x_start
+                local_alt_traj[1, :] -= slice_y_start
+                ax.plot(local_alt_traj[0, :], local_alt_traj[1, :], 'k--', alpha=0.4, label='Alt Evader Traj')
 
-        #     ax.plot(local_evader_pos[0], local_evader_pos[1], 'o', color='red', markersize=8, label="Evader")
-        #     ax.plot(local_uav_pos[0], local_uav_pos[1], 'o', color='blue', markersize=8, label="Pursuer")
+            ax.plot(local_evader_pos[0], local_evader_pos[1], 'o', color='red', markersize=8, label="Evader")
+            ax.plot(local_uav_pos[0], local_uav_pos[1], 'o', color='blue', markersize=8, label="Pursuer")
 
 
-        #     # for pred_traj in predicted_trajectories:
-        #     #     pred = np.array(pred_traj).T
+            # for pred_traj in predicted_trajectories:
+            #     pred = np.array(pred_traj).T
                 
-        #     #     pred[0,:] -= slice_x_start
-        #     #     pred[1, :] -= slice_y_start
-        #     #     ax.plot(pred[0, 1:], pred[1, 1:], '--k', alpha=1.0, label='predicted_traj')
+            #     pred[0,:] -= slice_x_start
+            #     pred[1, :] -= slice_y_start
+            #     ax.plot(pred[0, 1:], pred[1, 1:], '--k', alpha=1.0, label='predicted_traj')
 
-        #     # Plot FOV ellipse in local coordinates
-        #     heading_vec = np.array([np.cos(uav_current_theta), np.sin(uav_current_theta)])
-        #     # The ellipse center must also be transformed to the local frame
-        #     ellipse_center_world = uav_current_pos + a * heading_vec
-        #     local_ellipse_center = ellipse_center_world - [slice_x_start, slice_y_start]
+            # Plot FOV ellipse in local coordinates
+            heading_vec = np.array([np.cos(uav_current_theta), np.sin(uav_current_theta)])
+            # The ellipse center must also be transformed to the local frame
+            ellipse_center_world = uav_current_pos + a * heading_vec
+            local_ellipse_center = ellipse_center_world - [slice_x_start, slice_y_start]
             
-        #     fov_ellipse = Ellipse(
-        #         xy=local_ellipse_center, width=2 * a, height=2 * b, angle=np.rad2deg(uav_current_theta),
-        #         edgecolor='cyan', facecolor='cyan', alpha=0.25,label="FOV"
-        #     )
-        #     ax.add_patch(fov_ellipse)
+            fov_ellipse = Ellipse(
+                xy=local_ellipse_center, width=2 * a, height=2 * b, angle=np.rad2deg(uav_current_theta),
+                edgecolor='cyan', facecolor='cyan', alpha=0.25,label="FOV"
+            )
+            ax.add_patch(fov_ellipse)
 
         
-        #     if polygonal_obstacles:
-        #         for poly in polygonal_obstacles:
-        #             local_polygon = poly - [slice_x_start, slice_y_start]
+            if polygonal_obstacles:
+                for poly in polygonal_obstacles:
+                    local_polygon = poly - [slice_x_start, slice_y_start]
                     
-        #             ax.add_patch(Polygon(local_polygon, facecolor='orange', alpha=0.5, edgecolor='red',label="Obstacle"))
+                    ax.add_patch(Polygon(local_polygon, facecolor='orange', alpha=0.5, edgecolor='red',label="Obstacle"))
 
 
-        #     half_avoid = avoidance_region // 2
+            half_avoid = avoidance_region // 2
             
 
-        #     avoid_x_start_global = max(int(uav_current_pos[0]) - half_avoid, 0)
-        #     avoid_y_start_global = max(int(uav_current_pos[1]) - half_avoid, 0)
-        #     avoid_width_global = (min(int(uav_current_pos[0]) + half_avoid, map_width)) - avoid_x_start_global
-        #     avoid_height_global = (min(int(uav_current_pos[1]) + half_avoid, map_height)) - avoid_y_start_global
+            avoid_x_start_global = max(int(uav_current_pos[0]) - half_avoid, 0)
+            avoid_y_start_global = max(int(uav_current_pos[1]) - half_avoid, 0)
+            avoid_width_global = (min(int(uav_current_pos[0]) + half_avoid, map_width)) - avoid_x_start_global
+            avoid_height_global = (min(int(uav_current_pos[1]) + half_avoid, map_height)) - avoid_y_start_global
 
-        #     # 2. Transform the box's bottom-left corner to local view coordinates
-        #     #    The width and height remain the same.
-        #     avoid_box_local_xy = (
-        #         avoid_x_start_global - slice_x_start,
-        #         avoid_y_start_global - slice_y_start
-        #     )
+            # 2. Transform the box's bottom-left corner to local view coordinates
+            #    The width and height remain the same.
+            avoid_box_local_xy = (
+                avoid_x_start_global - slice_x_start,
+                avoid_y_start_global - slice_y_start
+            )
 
-        #     # 3. Create the Rectangle patch
-        #     avoid_box_patch = Rectangle(
-        #         avoid_box_local_xy,
-        #         avoid_width_global,
-        #         avoid_height_global,
-        #         edgecolor='yellow',
-        #         facecolor='none',
-        #         linestyle='--',
-        #         linewidth=2,
-        #         label='Avoidance Region' # This label will appear in the legend
-        #     )
+            # 3. Create the Rectangle patch
+            avoid_box_patch = Rectangle(
+                avoid_box_local_xy,
+                avoid_width_global,
+                avoid_height_global,
+                edgecolor='yellow',
+                facecolor='none',
+                linestyle='--',
+                linewidth=2,
+                label='Avoidance Region' # This label will appear in the legend
+            )
             
-        #     # 4. Add the patch to the plot
-        #     ax.add_patch(avoid_box_patch)
+            # 4. Add the patch to the plot
+            ax.add_patch(avoid_box_patch)
 
 
             
-        #     # Formatting
-        #     ax.set_title(f"Time: {t:.1f}s | UAV Velo: {v:.1f}m/s | Solve Time {solve_times[ind]*1000:.3f}ms")
+            # Formatting
+            ax.set_title(f"Time: {t:.1f}s | UAV Velo: {v:.1f}m/s | Solve Time {solve_times[ind]*1000:.3f}ms")
 
-        #     ax.set_xlim(0, slice_x_end - slice_x_start)
-        #     ax.set_ylim(0, slice_y_end - slice_y_start)
-        #     # ax.axis('equal')
-        #     ax.legend(loc='upper right')
-        #     plt.pause(0.01)
+            ax.set_xlim(0, slice_x_end - slice_x_start)
+            ax.set_ylim(0, slice_y_end - slice_y_start)
+            # ax.axis('equal')
+            ax.legend(loc='upper right')
+            plt.pause(0.01)
 
-        #     if evader.finished:
-        #         print(f"Evader reached the end of the path at time {t:.1f}s.")
-        #         break
+            if evader.finished:
+                print(f"Evader reached the end of the path at time {t:.1f}s.")
+                break
 
-        # print("Simulation finished.")
-        # plt.close('all')
+        print("Simulation finished.")
+        plt.close('all')
 
         mean_solver_time = np.mean(solve_times)
         std_solver_time = np.std(solve_times)
