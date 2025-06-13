@@ -931,13 +931,38 @@ def get_kdtree(roads):
                             neighbor_node = (neighbor_r, neighbor_c)
                             G.add_edge(current_node, neighbor_node)
 
-
-
+    
     positions = {node: (node[1], node[0]) for node in G.nodes()}
 
     nx.set_node_attributes(G, positions, name="pos")
 
+
+    full_G = nx.Graph()
+    rows, cols = filled_road.shape
+    for r in range(rows):
+        for c in range(cols):
+            if filled_road[r, c] == 1:
+                current_node = (r, c)
+                full_G.add_node(current_node)
+
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        neighbor_r, neighbor_c = r + dr, c + dc
+                        if 0 <= neighbor_r < rows and 0 <= neighbor_c < cols and \
+                        filled_road[neighbor_r, neighbor_c] == 1:
+                            neighbor_node = (neighbor_r, neighbor_c)
+                            full_G.add_edge(current_node, neighbor_node)
+
+
+
+    positions = {node: (node[1], node[0]) for node in full_G.nodes()}
+
+    nx.set_node_attributes(full_G, positions, name="pos")
+
     kdtree, nodes_list = build_kdtree(G)
+    # kdtree, nodes_list = build_kdtree(full_G)
 
     return G,kdtree,nodes_list
 
