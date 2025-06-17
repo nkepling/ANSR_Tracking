@@ -492,10 +492,9 @@ if __name__ == "__main__":
        
         print(f"\nStarting simulation with sliced map visualization {ind}")
 
-        
+
         evader_gt_path = get_evader_path_from_file(ground_truth_file_name,obstacle_map,roads,resolution,(origin_y,origin_x))
         
-
         # --- 2. SETUP MPC SIMULATION ---
         DT = 0.1
         MAX_SIM_TIME = 60.0
@@ -527,7 +526,7 @@ if __name__ == "__main__":
         evader = Evader(
             x=evader_start_pos[0], y=evader_start_pos[1],
             theta=initial_angle, # Use the same initial angle
-            v=evader_velocity, path=evader_gt_path, lookahead_distance=5.0
+            v=evader_velocity, path=evader_gt_path, lookahead_distance=15.0
         )
 
         
@@ -581,7 +580,7 @@ if __name__ == "__main__":
             
             evader_prediction = evader.get_predicted_trajectory(N_TRAJ, DT)
 
-            num_alternatives = 3
+            num_alternatives = 10
             noise_scale = 2.0  # Adjust this for more/less deviation
 
             # alternative_evader_trajectories = generate_waypoint_deviations(evader_prediction,num_alternatives,noise_scale=noise_scale,num_waypoints=len(evader_prediction))
